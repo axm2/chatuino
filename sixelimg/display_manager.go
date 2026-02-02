@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/color"
 	imgdraw "image/draw"
 	"image/gif"
 	_ "image/jpeg"
@@ -385,6 +384,3 @@ func imageToSixel(img image.Image) (string, error) {
 
 	return buf.String(), nil
 }
-
-// Ensure unused import doesn't cause issues
-var _ = color.RGBA{}

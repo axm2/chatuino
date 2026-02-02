@@ -37,7 +37,9 @@ func hasSixelSupport() bool {
 		return true
 	}
 
-	// If user explicitly sets sixel mode, assume they know their terminal supports it
+	// When user explicitly sets sixel mode in settings, we trust they know their terminal supports it.
+	// This allows advanced users to use sixel on terminals we don't explicitly detect.
+	// If sixel doesn't work, the user can switch back to text mode.
 	return true
 }
 
