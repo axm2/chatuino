@@ -2,10 +2,10 @@ package mainui
 
 import (
 	"context"
+	"time"
 
 	"github.com/julez-dev/chatuino/badge"
 	"github.com/julez-dev/chatuino/emote"
-	"github.com/julez-dev/chatuino/kittyimg"
 	"github.com/julez-dev/chatuino/save"
 	"github.com/julez-dev/chatuino/save/messagelog"
 	"github.com/julez-dev/chatuino/server"
@@ -61,6 +61,12 @@ type UserEmoteClient interface {
 	FetchAllUserEmotes(ctx context.Context, userID string, broadcasterID string) ([]twitchapi.UserEmoteImage, string, error)
 }
 
+// ImageDisplayManager manages terminal graphics display (Kitty or Sixel).
+type ImageDisplayManager interface {
+	CleanupOldImagesCommand(maxAge time.Duration) string
+	CleanupAllImagesCommand() string
+}
+
 // ConnectionPool manages WebSocket connections for IRC and EventSub.
 type ConnectionPool interface {
 	ConnectIRC(accountID string) error
@@ -97,7 +103,7 @@ type DependencyContainer struct {
 	BadgeCache           *badge.Cache
 	EmoteReplacer        EmoteReplacer
 	BadgeReplacer        BadgeReplacer
-	ImageDisplayManager  *kittyimg.DisplayManager
+	ImageDisplayManager  ImageDisplayManager
 	RecentMessageService RecentMessageService
 	MessageLogger        MessageLogger
 	Pool                 ConnectionPool
