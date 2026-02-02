@@ -23,9 +23,10 @@ block_settings:
   words:
     - Kappa
 chat:
-  # NOTE: Read the README for more information about emote rendering before enabling this feature
+  # NOTE: Read the documentation below for more information about emote rendering before enabling this feature
   graphic_emotes: true # Display emotes as images instead of text; Default: false
   graphic_badges: true # Display badges as images instead of text; Default: false
+  graphics_mode: kitty # Graphics protocol: "kitty" (default) or "sixel" for terminals like Windows Terminal
 custom_commands:
   # Custom commands are available as command suggestions
   - trigger: "/ocean"
@@ -111,9 +112,44 @@ When `graphic_emotes` is disabled, Chatuino displays emotes as colored text. The
 
 ### Graphic Emotes
 
-Chatuino can display images and animated images as Twitch emotes using the Kitty Graphics Protocol. This protocol is implemented by Kitty and some other terminals. However, it uses the [Unicode placeholder method](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), which is currently only fully implemented by Kitty. It also works with Ghostty, but animated emotes display as static images.
+Chatuino can display images as Twitch emotes using terminal graphics protocols. Two protocols are supported:
 
-Currently, this feature is **only** available in Kitty and Ghostty terminals on Unix platforms. This may change in the future.
+#### Kitty Graphics Protocol (Default)
+
+The Kitty Graphics Protocol uses the [Unicode placeholder method](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders) for displaying images. This protocol supports animated images and is fully implemented by Kitty terminal. It also works with Ghostty, but animated emotes display as static images.
+
+**Supported terminals:**
+- Kitty (full support including animations)
+- Ghostty (static images only)
+
+**Platform:** Unix/Linux/macOS only
+
+#### Sixel Graphics Protocol
+
+Sixel is a graphics protocol supported by a wider variety of terminals, including Windows Terminal. Sixel does not support animations, so animated emotes will be displayed as static images (first frame).
+
+**Supported terminals:**
+- Windows Terminal
+- WezTerm
+- mlterm
+- foot
+- mintty (Git Bash, MSYS2, Cygwin)
+- XTerm (with sixel support compiled in)
+
+**Platform:** Unix/Linux/macOS/Windows
+
+### Configuration
+
+To use graphic emotes/badges, add the following to your `settings.yaml`:
+
+```yaml
+chat:
+  graphic_emotes: true
+  graphic_badges: true
+  graphics_mode: kitty  # or "sixel" for sixel protocol
+```
+
+If `graphics_mode` is not specified, it defaults to `kitty`. Use `sixel` for terminals that support sixel but not the Kitty protocol (e.g., Windows Terminal).
 
 #### Format Support and Caching
 

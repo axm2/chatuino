@@ -18,6 +18,7 @@ import (
 	"github.com/julez-dev/chatuino/httputil"
 	"github.com/julez-dev/chatuino/kittyimg"
 	"github.com/julez-dev/chatuino/save/messagelog"
+	"github.com/julez-dev/chatuino/sixelimg"
 	"github.com/julez-dev/chatuino/twitch/bttv"
 	"github.com/julez-dev/chatuino/twitch/recentmessage"
 	"github.com/julez-dev/chatuino/twitch/twitchapi"
@@ -218,12 +219,17 @@ func main() {
 			var (
 				emoteReplacer  = emote.NewReplacer(http.DefaultClient, emoteCache, false, theme, nil)
 				badgeReplacer  = badge.NewReplacer(http.DefaultClient, badgeCache, false, theme, nil)
-				displayManager *kittyimg.DisplayManager
+				displayManager mainui.ImageDisplayManager
 			)
 
 			if settings.Chat.GraphicEmotes || settings.Chat.GraphicBadges {
-				if !hasImageSupport() {
-					return fmt.Errorf("graphical image support enabled but not available for this platform (unix & kitty terminal only)")
+				graphicsMode := settings.Chat.GraphicsMode
+				if graphicsMode == "" {
+					graphicsMode = save.GraphicsModeKitty // default to kitty
+				}
+
+				if !hasImageSupport(graphicsMode) {
+					return fmt.Errorf("graphical image support enabled but not available for this platform (graphics_mode: %s)", graphicsMode)
 				}
 
 				cellWidth, cellHeight, err := getTermCellWidthHeight()
@@ -231,14 +237,29 @@ func main() {
 					return fmt.Errorf("failed to get terminal size: %w", err)
 				}
 
-				displayManager = kittyimg.NewDisplayManager(afero.NewOsFs(), cellWidth, cellHeight)
+				// Create the appropriate display manager based on graphics mode
+				var emoteDisplayManager emote.DisplayManager
+				var badgeDisplayManager badge.DisplayManager
+
+				switch graphicsMode {
+				case save.GraphicsModeSixel:
+					sixelManager := sixelimg.NewDisplayManager(afero.NewOsFs(), cellWidth, cellHeight)
+					displayManager = sixelManager
+					emoteDisplayManager = sixelManager
+					badgeDisplayManager = sixelManager
+				default: // kitty
+					kittyManager := kittyimg.NewDisplayManager(afero.NewOsFs(), cellWidth, cellHeight)
+					displayManager = kittyManager
+					emoteDisplayManager = kittyManager
+					badgeDisplayManager = kittyManager
+				}
 
 				if settings.Chat.GraphicEmotes {
-					emoteReplacer = emote.NewReplacer(http.DefaultClient, emoteCache, true, theme, displayManager)
+					emoteReplacer = emote.NewReplacer(http.DefaultClient, emoteCache, true, theme, emoteDisplayManager)
 				}
 
 				if settings.Chat.GraphicBadges {
-					badgeReplacer = badge.NewReplacer(http.DefaultClient, badgeCache, true, theme, displayManager)
+					badgeReplacer = badge.NewReplacer(http.DefaultClient, badgeCache, true, theme, badgeDisplayManager)
 				}
 
 				defer func() {

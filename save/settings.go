@@ -30,10 +30,21 @@ type ModerationSettings struct {
 	LogsChannelExclude []string `yaml:"logs_channel_exclude"`
 }
 
+// GraphicsMode defines the terminal graphics protocol to use.
+type GraphicsMode string
+
+const (
+	// GraphicsModeKitty uses the Kitty graphics protocol (default).
+	GraphicsModeKitty GraphicsMode = "kitty"
+	// GraphicsModeSixel uses the Sixel graphics protocol.
+	GraphicsModeSixel GraphicsMode = "sixel"
+)
+
 type ChatSettings struct {
-	GraphicBadges              bool `yaml:"graphic_badges"`
-	GraphicEmotes              bool `yaml:"graphic_emotes"`
-	DisablePaddingWrappedLines bool `yaml:"disable_padding_wrapped_lines"`
+	GraphicBadges              bool         `yaml:"graphic_badges"`
+	GraphicEmotes              bool         `yaml:"graphic_emotes"`
+	GraphicsMode               GraphicsMode `yaml:"graphics_mode"`
+	DisablePaddingWrappedLines bool         `yaml:"disable_padding_wrapped_lines"`
 }
 
 type BlockSettings struct {
@@ -85,6 +96,10 @@ func (s Settings) validate() error {
 
 	if slices.Contains(s.BlockSettings.Words, "") {
 		return fmt.Errorf("block settings word entry can't be empty string")
+	}
+
+	if s.Chat.GraphicsMode != "" && s.Chat.GraphicsMode != GraphicsModeKitty && s.Chat.GraphicsMode != GraphicsModeSixel {
+		return fmt.Errorf("invalid graphics_mode %q, must be one of: kitty, sixel", s.Chat.GraphicsMode)
 	}
 
 	return nil

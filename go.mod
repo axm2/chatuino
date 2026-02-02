@@ -27,6 +27,7 @@ require (
 	github.com/julez-dev/reflow v0.0.0-20250718145208-b4c12bfbd7f7
 	github.com/lithammer/fuzzysearch v1.1.8
 	github.com/mailru/easyjson v0.9.1
+	github.com/mattn/go-sixel v0.0.8
 	github.com/redis/go-redis/v9 v9.17.3
 	github.com/rmhubbert/bubbletea-overlay v0.6.4
 	github.com/spf13/afero v1.15.0
@@ -57,6 +58,7 @@ require (
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/tetratelabs/wazero v1.11.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
