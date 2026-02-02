@@ -33,6 +33,7 @@ type ModerationSettings struct {
 type ChatSettings struct {
 	GraphicBadges              bool `yaml:"graphic_badges"`
 	GraphicEmotes              bool `yaml:"graphic_emotes"`
+	DisableBadges              bool `yaml:"disable_badges"`
 	DisablePaddingWrappedLines bool `yaml:"disable_padding_wrapped_lines"`
 }
 
