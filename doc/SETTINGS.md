@@ -26,6 +26,7 @@ chat:
   # NOTE: Read the README for more information about emote rendering before enabling this feature
   graphic_emotes: true # Display emotes as images instead of text; Default: false
   graphic_badges: true # Display badges as images instead of text; Default: false
+  disable_badges: false # Hide badges entirely; Default: false
 custom_commands:
   # Custom commands are available as command suggestions
   - trigger: "/ocean"

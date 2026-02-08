@@ -673,7 +673,7 @@ func (c *chatWindow) messageToText(event chatEventMessage) []string {
 			parts = append(parts, "|"+event.channelGuestDisplayName+"|")
 		}
 
-		if len(event.displayModifier.badgeReplacement) > 0 {
+		if len(event.displayModifier.badgeReplacement) > 0 && !c.deps.UserConfig.Settings.Chat.DisableBadges {
 			badges := formatBadgeReplacement(c.deps.UserConfig.Settings, event.displayModifier.badgeReplacement)
 			if c.deps.UserConfig.Settings.Chat.GraphicBadges {
 				// Hair space (U+200A) - narrower gap since badges have pixel padding
