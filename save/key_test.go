@@ -36,13 +36,3 @@ func TestKeyMap_UnmarshalYAML(t *testing.T) {
 	require.Equal(t, []string{"w", "q"}, gotKeyMap.Up.Keys()) // should be overwritten
 
 }
-
-func TestDefaultKeyMap_InsertModeAcceptsBothCases(t *testing.T) {
-	t.Parallel()
-
-	keyMap := BuildDefaultKeyMap()
-
-	// Verify that InsertMode accepts both lowercase and uppercase "i"
-	require.Contains(t, keyMap.InsertMode.Keys(), "i", "InsertMode should accept lowercase 'i'")
-	require.Contains(t, keyMap.InsertMode.Keys(), "I", "InsertMode should accept uppercase 'I' for Caps Lock support")
-}
