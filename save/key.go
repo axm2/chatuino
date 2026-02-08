@@ -155,7 +155,7 @@ func BuildDefaultKeyMap() KeyMap {
 			key.WithHelp("shift+tab", "previous item"),
 		),
 		InsertMode: key.NewBinding(
-			key.WithKeys("i"),
+			key.WithKeys("i", "I"),
 			key.WithHelp("i", "insert mode"),
 		),
 		InspectMode: key.NewBinding(
