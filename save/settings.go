@@ -31,10 +31,10 @@ type ModerationSettings struct {
 }
 
 type ChatSettings struct {
-	GraphicBadges              bool `yaml:"graphic_badges"`
-	GraphicEmotes              bool `yaml:"graphic_emotes"`
-	DisableBadges              bool `yaml:"disable_badges"`
-	DisablePaddingWrappedLines bool `yaml:"disable_padding_wrapped_lines"`
+	GraphicBadges              bool   `yaml:"graphic_badges"`
+	GraphicEmotes              bool   `yaml:"graphic_emotes"`
+	DisablePaddingWrappedLines bool   `yaml:"disable_padding_wrapped_lines"`
+	TimeFormat                 string `yaml:"time_format"` // Go time format string, default: "15:04:05"
 }
 
 type BlockSettings struct {
