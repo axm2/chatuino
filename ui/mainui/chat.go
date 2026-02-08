@@ -94,9 +94,6 @@ func newChatWindow(width, height int, deps *DependencyContainer) *chatWindow {
 	indicator := lipgloss.NewStyle().Foreground(lipgloss.Color(deps.UserConfig.Theme.ChatIndicatorColor)).Background(lipgloss.Color(deps.UserConfig.Theme.ChatIndicatorColor)).Render(">")
 
 	timeFormat := deps.UserConfig.Settings.Chat.TimeFormat
-	if timeFormat == "" {
-		timeFormat = "15:04:05"
-	}
 
 	c := chatWindow{
 		deps:           deps,
