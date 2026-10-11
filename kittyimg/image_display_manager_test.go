@@ -2,9 +2,12 @@ package kittyimg
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
@@ -272,4 +275,78 @@ func TestIntToRGB(t *testing.T) {
 			require.Equal(t, tt.b, b)
 		})
 	}
+}
+
+func TestDisplayManager_ConvertCached_NeverLoads(t *testing.T) {
+	t.Parallel()
+
+	dm := NewDisplayManager(afero.NewMemMapFs(), 10, 10, DisplayOptions{})
+
+	unit := DisplayUnit{
+		ID:        fmt.Sprintf("convert-cached-never-loads-%d", time.Now().UnixNano()), // session cache is global
+		Directory: "emote",
+		Load: func() (io.ReadCloser, string, error) {
+			t.Fatal("ConvertCached must not load")
+			return nil, "", nil
+		},
+	}
+
+	_, err := dm.ConvertCached(unit)
+	require.ErrorIs(t, err, ErrImageNotCached)
+}
+
+func TestDisplayManager_Convert_ConcurrentSameImage(t *testing.T) {
+	t.Parallel()
+
+	dm := NewDisplayManager(afero.NewMemMapFs(), 10, 10, DisplayOptions{})
+
+	emoteData, err := os.ReadFile("../emote/testdata/pepeLaugh.webp")
+	require.NoError(t, err)
+
+	var loads atomic.Int32
+	release := make(chan struct{})
+	unit := DisplayUnit{
+		ID:        fmt.Sprintf("convert-concurrent-same-image-%d", time.Now().UnixNano()), // session cache is global
+		Directory: "emote",
+		Load: func() (io.ReadCloser, string, error) {
+			loads.Add(1)
+			<-release // keep the download in flight until all callers wait for it
+			return io.NopCloser(bytes.NewReader(emoteData)), "image/webp", nil
+		},
+	}
+
+	const callers = 8
+	results := make(chan KittyDisplayUnit, callers)
+	for range callers {
+		go func() {
+			u, err := dm.Convert(unit)
+			if err != nil {
+				t.Error(err)
+			}
+			results <- u
+		}()
+	}
+
+	// ConvertCached on the "UI loop" doesn't block while the download is in flight
+	_, err = dm.ConvertCached(unit)
+	require.ErrorIs(t, err, ErrImageNotCached)
+
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	var prepared int
+	var placeholder string
+	for range callers {
+		u := <-results
+		if u.PrepareCommand != "" {
+			prepared++
+		}
+		if placeholder == "" {
+			placeholder = u.ReplacementText
+		}
+		require.Equal(t, placeholder, u.ReplacementText, "all callers share one placement")
+	}
+
+	require.LessOrEqual(t, loads.Load(), int32(2), "downloads are deduplicated") // a late caller may miss the in-flight call, but finds the placement
+	require.Equal(t, 1, prepared, "image is placed exactly once")
 }

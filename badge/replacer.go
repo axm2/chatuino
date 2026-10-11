@@ -3,6 +3,7 @@ package badge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -28,6 +29,7 @@ type BadgeCache interface {
 
 type DisplayManager interface {
 	Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+	ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
 }
 
 type Replacer struct {
@@ -61,7 +63,27 @@ func NewReplacer(httpClient *http.Client, cache BadgeCache, enableGraphics bool,
 	}
 }
 
+// Replace replaces badges with images. Downloads missing badge images, which may block for a long time.
 func (r *Replacer) Replace(broadcasterID string, badgeList []twitchirc.Badge) (string, map[string]string, error) {
+	cmd, badges, _, err := r.replace(broadcasterID, badgeList, false)
+	return cmd, badges, err
+}
+
+// ReplaceCached is like Replace but never downloads. Badges whose images are not cached yet are
+// replaced with text and pending is true. Call Replace in the background to resolve them.
+func (r *Replacer) ReplaceCached(broadcasterID string, badgeList []twitchirc.Badge) (cmd string, badges map[string]string, pending bool, err error) {
+	return r.replace(broadcasterID, badgeList, true)
+}
+
+func (r *Replacer) textBadge(set string, b twitchapi.BadgeVersion) string {
+	if colored, ok := r.badeColorMap[set]; ok {
+		return colored
+	}
+
+	return b.Title
+}
+
+func (r *Replacer) replace(broadcasterID string, badgeList []twitchirc.Badge, cachedOnly bool) (string, map[string]string, bool, error) {
 	badgeMap := r.cache.MatchBadgeSet(broadcasterID, badgeList)
 	badgesSortedKeys := slices.Sorted(maps.Keys(badgeMap))
 
@@ -69,25 +91,19 @@ func (r *Replacer) Replace(broadcasterID string, badgeList []twitchirc.Badge) (s
 
 	if !r.enableGraphics {
 		for _, k := range badgesSortedKeys {
-			b := badgeMap[k]
-
-			if colored, ok := r.badeColorMap[k]; ok {
-				formattedBadges[k] = colored
-				continue
-			}
-
-			formattedBadges[k] = b.Title
+			formattedBadges[k] = r.textBadge(k, badgeMap[k])
 		}
 
-		return "", formattedBadges, nil
+		return "", formattedBadges, false, nil
 	}
 
 	prepare := strings.Builder{}
+	pending := false
 
 	for _, k := range badgesSortedKeys {
 		b := badgeMap[k]
 
-		u, err := r.displayManager.Convert(kittyimg.DisplayUnit{
+		unit := kittyimg.DisplayUnit{
 			ID:           broadcasterID + k + b.ID,
 			Directory:    "badge",
 			RightPadding: badgePadding,
@@ -98,9 +114,26 @@ func (r *Replacer) Replace(broadcasterID string, badgeList []twitchirc.Badge) (s
 
 				return r.fetch(context.Background(), b.Image_URL_1x)
 			},
-		})
+		}
+
+		var (
+			u   kittyimg.KittyDisplayUnit
+			err error
+		)
+		if cachedOnly {
+			u, err = r.displayManager.ConvertCached(unit)
+		} else {
+			u, err = r.displayManager.Convert(unit)
+		}
+
+		if errors.Is(err, kittyimg.ErrImageNotCached) {
+			pending = true
+			formattedBadges[k] = r.textBadge(k, b)
+			continue
+		}
+
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to convert (%s) badge: %w", broadcasterID+k+b.ID, err)
+			return "", nil, false, fmt.Errorf("failed to convert (%s) badge: %w", broadcasterID+k+b.ID, err)
 		}
 
 		prepare.WriteString(u.PrepareCommand)
@@ -108,7 +141,7 @@ func (r *Replacer) Replace(broadcasterID string, badgeList []twitchirc.Badge) (s
 		formattedBadges[k] = u.ReplacementText
 	}
 
-	return prepare.String(), formattedBadges, nil
+	return prepare.String(), formattedBadges, pending, nil
 }
 
 func (r *Replacer) fetch(ctx context.Context, reqURL string) (io.ReadCloser, string, error) {

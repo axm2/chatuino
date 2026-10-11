@@ -15,10 +15,19 @@ func NewMockDisplayManager(t interface {
 	mock.TestingT
 	Cleanup(func())
 }) *MockDisplayManager {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
 	mock := &MockDisplayManager{}
 	mock.Mock.Test(t)
 
-	t.Cleanup(func() { mock.AssertExpectations(t) })
+	t.Cleanup(func() {
+		if helper, ok := t.(interface{ Helper() }); ok {
+			helper.Helper()
+		}
+		mock.AssertExpectations(t)
+	})
 
 	return mock
 }
@@ -69,7 +78,7 @@ type MockDisplayManager_Convert_Call struct {
 
 // Convert is a helper method to define mock.On call
 //   - unit kittyimg.DisplayUnit
-func (_e *MockDisplayManager_Expecter) Convert(unit interface{}) *MockDisplayManager_Convert_Call {
+func (_e *MockDisplayManager_Expecter) Convert(unit any) *MockDisplayManager_Convert_Call {
 	return &MockDisplayManager_Convert_Call{Call: _e.mock.On("Convert", unit)}
 }
 
@@ -92,6 +101,66 @@ func (_c *MockDisplayManager_Convert_Call) Return(kittyDisplayUnit kittyimg.Kitt
 }
 
 func (_c *MockDisplayManager_Convert_Call) RunAndReturn(run func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)) *MockDisplayManager_Convert_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// ConvertCached provides a mock function for the type MockDisplayManager
+func (_mock *MockDisplayManager) ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+	ret := _mock.Called(unit)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ConvertCached")
+	}
+
+	var r0 kittyimg.KittyDisplayUnit
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)); ok {
+		return returnFunc(unit)
+	}
+	if returnFunc, ok := ret.Get(0).(func(kittyimg.DisplayUnit) kittyimg.KittyDisplayUnit); ok {
+		r0 = returnFunc(unit)
+	} else {
+		r0 = ret.Get(0).(kittyimg.KittyDisplayUnit)
+	}
+	if returnFunc, ok := ret.Get(1).(func(kittyimg.DisplayUnit) error); ok {
+		r1 = returnFunc(unit)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockDisplayManager_ConvertCached_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ConvertCached'
+type MockDisplayManager_ConvertCached_Call struct {
+	*mock.Call
+}
+
+// ConvertCached is a helper method to define mock.On call
+//   - unit kittyimg.DisplayUnit
+func (_e *MockDisplayManager_Expecter) ConvertCached(unit any) *MockDisplayManager_ConvertCached_Call {
+	return &MockDisplayManager_ConvertCached_Call{Call: _e.mock.On("ConvertCached", unit)}
+}
+
+func (_c *MockDisplayManager_ConvertCached_Call) Run(run func(unit kittyimg.DisplayUnit)) *MockDisplayManager_ConvertCached_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 kittyimg.DisplayUnit
+		if args[0] != nil {
+			arg0 = args[0].(kittyimg.DisplayUnit)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockDisplayManager_ConvertCached_Call) Return(kittyDisplayUnit kittyimg.KittyDisplayUnit, err error) *MockDisplayManager_ConvertCached_Call {
+	_c.Call.Return(kittyDisplayUnit, err)
+	return _c
+}
+
+func (_c *MockDisplayManager_ConvertCached_Call) RunAndReturn(run func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)) *MockDisplayManager_ConvertCached_Call {
 	_c.Call.Return(run)
 	return _c
 }

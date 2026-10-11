@@ -129,6 +129,9 @@ type Root struct {
 	quickJoinInput *quickJoin
 	help           *help
 
+	// imageKeyCounter generates chatEventMessage.imageKey, only accessed from the event loop
+	imageKeyCounter uint64
+
 	tabCursor          int
 	tabs               []tab
 	channelSuggestions []string // cached for broadcast to new tabs
@@ -461,14 +464,26 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			r.messageLoggerChan <- privateMsg.Clone()
 		}
 
-		// Build and forward event to tabs
-		evt := r.buildChatEventMessage(msg.AccountID, "", msg.Message, false)
+		// Build and forward event to tabs. Runs on the event loop, so only cached images are
+		// used, missing images are downloaded in the background and swapped in later.
+		evt, resolveImages := r.buildLiveChatEventMessage(msg.AccountID, msg.Message)
+		cmds = append(cmds, resolveImages)
 		if evt.prepareCommand != "" {
 			cmds = append(cmds, tea.Raw(evt.prepareCommand))
 			evt.prepareCommand = ""
 		}
 		for i := range r.tabs {
 			r.tabs[i], cmd = r.tabs[i].Update(evt)
+			cmds = append(cmds, cmd)
+		}
+		return r, tea.Batch(cmds...)
+	case imagesResolvedMessage:
+		if msg.prepareCommand != "" {
+			cmds = append(cmds, tea.Raw(msg.prepareCommand))
+			msg.prepareCommand = ""
+		}
+		for i := range r.tabs {
+			r.tabs[i], cmd = r.tabs[i].Update(msg)
 			cmds = append(cmds, cmd)
 		}
 		return r, tea.Batch(cmds...)
@@ -1256,7 +1271,134 @@ func (r *Root) handlePersistedDataLoaded(msg persistedDataLoadedMessage) tea.Cmd
 	return tea.Batch(cmds...)
 }
 
+// buildChatEventMessage builds the chat event for ircer, downloading missing emote and badge
+// images. May block for a long time, don't call it from the event loop, see buildLiveChatEventMessage.
 func (r *Root) buildChatEventMessage(accountID string, tabID string, ircer twitchirc.IRCer, isFakeEvent bool) chatEventMessage {
+	event, _ := r.buildChatEventMessageImages(accountID, tabID, ircer, isFakeEvent, false)
+	return event
+}
+
+// buildLiveChatEventMessage builds the chat event for ircer using cached images only, so it can be
+// called from the event loop. Emotes and badges without cached images are displayed as text, the
+// returned command downloads them and swaps them in (see imagesResolvedMessage).
+func (r *Root) buildLiveChatEventMessage(accountID string, ircer twitchirc.IRCer) (chatEventMessage, tea.Cmd) {
+	event, pending := r.buildChatEventMessageImages(accountID, "", ircer, false, true)
+	if pending == nil {
+		return event, nil
+	}
+
+	r.imageKeyCounter++
+	event.imageKey = r.imageKeyCounter
+
+	return event, r.resolveImagesCommand(event.imageKey, *pending)
+}
+
+// imageRequest holds everything needed to replace the emotes and badges of a message.
+type imageRequest struct {
+	emoteSourceRoom string
+	message         string
+	emotes          []twitchirc.Emote
+	badges          []twitchirc.Badge
+	loginName       string
+}
+
+type replacedImages struct {
+	prepareCommand   string
+	wordReplacements wordReplacement
+	badgeReplacement wordReplacement
+	pending          bool // some images were not cached and replaced as text
+	badgesFailed     bool // badges could not be replaced
+}
+
+// replaceImages replaces emotes and badges. With cachedOnly, nothing is downloaded and missing
+// images are replaced as text.
+func (r *Root) replaceImages(req imageRequest, cachedOnly bool) replacedImages {
+	var (
+		result replacedImages
+		cmd    strings.Builder
+	)
+
+	if len(req.message) > 0 {
+		var (
+			p           string
+			replacement map[string]string
+			pending     bool
+			err         error
+		)
+		if cachedOnly {
+			p, replacement, pending, err = r.dependencies.EmoteReplacer.ReplaceCached(req.emoteSourceRoom, req.message, req.emotes)
+		} else {
+			p, replacement, err = r.dependencies.EmoteReplacer.Replace(req.emoteSourceRoom, req.message, req.emotes)
+		}
+		if err != nil {
+			log.Logger.Info().Err(err).Str("message", req.message).Msg("failed to replace emotes")
+		}
+
+		result.wordReplacements = replacement
+		result.pending = result.pending || pending
+		cmd.WriteString(p)
+	}
+
+	if len(req.badges) > 0 {
+		var (
+			p       string
+			replace map[string]string
+			pending bool
+			err     error
+		)
+		if cachedOnly {
+			p, replace, pending, err = r.dependencies.BadgeReplacer.ReplaceCached(req.emoteSourceRoom, req.badges)
+		} else {
+			p, replace, err = r.dependencies.BadgeReplacer.Replace(req.emoteSourceRoom, req.badges)
+		}
+		if err != nil {
+			log.Logger.Info().Err(err).Str("message", req.message).Msg("failed to replace badges")
+			result.badgesFailed = true
+		}
+
+		result.badgeReplacement = replace
+		result.pending = result.pending || pending
+		cmd.WriteString(p)
+	}
+
+	if result.badgeReplacement == nil {
+		result.badgeReplacement = make(wordReplacement)
+	}
+
+	if req.loginName != "" {
+		p, err := r.dependencies.BadgeReplacer.InjectContributorBadge(req.loginName, result.badgeReplacement)
+		if err != nil {
+			log.Logger.Info().Err(err).Str("login", req.loginName).Msg("failed to inject contributor badge")
+		}
+		cmd.WriteString(p)
+	}
+
+	result.prepareCommand = cmd.String()
+	return result
+}
+
+// resolveImagesCommand downloads the images of req in the background and delivers them as
+// imagesResolvedMessage for the chat event with imageKey.
+func (r *Root) resolveImagesCommand(imageKey uint64, req imageRequest) tea.Cmd {
+	return func() tea.Msg {
+		resolved := r.replaceImages(req, false)
+
+		msg := imagesResolvedMessage{
+			imageKey:         imageKey,
+			prepareCommand:   resolved.prepareCommand,
+			wordReplacements: resolved.wordReplacements,
+		}
+
+		// keep text badges if badges could not be resolved
+		if !resolved.badgesFailed {
+			msg.badgeReplacement = resolved.badgeReplacement
+		}
+
+		return msg
+	}
+}
+
+func (r *Root) buildChatEventMessageImages(accountID string, tabID string, ircer twitchirc.IRCer, isFakeEvent bool, cachedImagesOnly bool) (event chatEventMessage, pending *imageRequest) {
 	var (
 		channel                 string
 		message                 string
@@ -1360,7 +1502,7 @@ func (r *Root) buildChatEventMessage(accountID string, tabID string, ircer twitc
 		channel = ircMessage.ChannelUserName
 	}
 
-	event := chatEventMessage{
+	event = chatEventMessage{
 		isFakeEvent:             isFakeEvent,
 		accountID:               accountID,
 		channel:                 channel,
@@ -1376,37 +1518,21 @@ func (r *Root) buildChatEventMessage(accountID string, tabID string, ircer twitc
 		},
 	}
 
-	var replaceCommand string
-
-	if len(message) > 0 {
-		p, replacement, err := r.dependencies.EmoteReplacer.Replace(emoteSourceRoom, message, emotes)
-		if err != nil {
-			log.Logger.Info().Err(err).Str("message", message).Msg("failed to replace emotes")
-		}
-
-		for k, v := range replacement {
-			event.displayModifier.wordReplacements[k] = v
-		}
-
-		replaceCommand += p
+	images := imageRequest{
+		emoteSourceRoom: emoteSourceRoom,
+		message:         message,
+		emotes:          emotes,
+		badges:          badges,
+		loginName:       loginName,
 	}
 
-	if len(badges) > 0 {
-		p, replace, err := r.dependencies.BadgeReplacer.Replace(emoteSourceRoom, badges)
-		if err != nil {
-			log.Logger.Info().Err(err).Str("message", message).Msg("failed to replace badges")
-		}
+	resolved := r.replaceImages(images, cachedImagesOnly)
+	maps.Copy(event.displayModifier.wordReplacements, resolved.wordReplacements)
+	event.displayModifier.badgeReplacement = resolved.badgeReplacement
+	replaceCommand := resolved.prepareCommand
 
-		event.displayModifier.badgeReplacement = replace
-		replaceCommand += p
-	}
-
-	if loginName != "" {
-		p, err := r.dependencies.BadgeReplacer.InjectContributorBadge(loginName, event.displayModifier.badgeReplacement)
-		if err != nil {
-			log.Logger.Info().Err(err).Str("login", loginName).Msg("failed to inject contributor badge")
-		}
-		replaceCommand += p
+	if resolved.pending {
+		pending = &images
 	}
 
 	if r.dependencies.UserConfig.Settings.Security.CheckLinks && len(message) > 0 {
@@ -1448,7 +1574,7 @@ func (r *Root) buildChatEventMessage(accountID string, tabID string, ircer twitc
 	}
 
 	event.prepareCommand = replaceCommand
-	return event
+	return event, pending
 }
 
 // imageAnimationTickCommand returns a command that ticks after delay to advance animated

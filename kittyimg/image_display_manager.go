@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/adrg/xdg"
 	easyjson "github.com/mailru/easyjson"
 	"github.com/spf13/afero"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/sync/syncmap"
 )
 
@@ -37,6 +39,9 @@ var (
 )
 
 var ErrUnsupportedAnimatedFormat = errors.New("emote is animated but in non supported format")
+
+// ErrImageNotCached is returned by ConvertCached when the image must be downloaded first.
+var ErrImageNotCached = errors.New("image not cached")
 
 var (
 	globalImagePlacementIDCounter atomic.Int32 = atomic.Int32{}
@@ -146,7 +151,19 @@ type DisplayManager struct {
 	rows                  int
 	animation             AnimationMode
 	animator              *animator
+
+	// placeMu serializes placing images in the session, so an image is placed only once
+	// even if converted concurrently. Never held while downloading or decoding.
+	placeMu sync.Mutex
+	// downloads deduplicates concurrent downloads and decodes of the same image
+	downloads singleflight.Group
+	// downloadSlots bounds concurrent downloads and decodes. Decoding an animated emote
+	// allocates ~100MB, unbounded bursts would starve the UI of CPU.
+	downloadSlots chan struct{}
 }
+
+// maxConcurrentDownloads is the number of images downloaded and decoded at the same time.
+const maxConcurrentDownloads = 4
 
 // DisplayOptions configures how images are displayed.
 type DisplayOptions struct {
@@ -163,6 +180,8 @@ func NewDisplayManager(fs afero.Fs, cellWidth, cellHeight float32, opts DisplayO
 		rows:       min(max(opts.Rows, 1), MaxRows),
 		animation:  opts.Animation,
 		animator:   newAnimator(),
+
+		downloadSlots: make(chan struct{}, maxConcurrentDownloads),
 	}
 }
 
@@ -218,50 +237,109 @@ func (d *DisplayManager) colsFor(width, height int) int {
 	return int(math.Ceil(float64(float32(scaledWidth) / d.cellWidth)))
 }
 
+// Convert returns the display unit for an image, downloading and decoding it if necessary.
+// May block for a long time (network, decoding), don't call it from the UI event loop.
+// Safe for concurrent use, concurrent downloads of the same image are deduplicated.
 func (d *DisplayManager) Convert(unit DisplayUnit) (KittyDisplayUnit, error) {
-	// 1st: image was already placed in this session, reusing placement
-	if cached, ok := globalPlacedImages.Load(unit.ID); ok {
-		i, ok := cached.(DecodedImage)
-		if !ok {
-			log.Logger.Error().Str("id", unit.ID).Type("type", cached).Msg("unexpected type in session cache")
-			globalPlacedImages.Delete(unit.ID)
-		} else {
-			i.lastUsed = time.Now()
-			globalPlacedImages.Swap(unit.ID, i)
+	if u, err := d.ConvertCached(unit); !errors.Is(err, ErrImageNotCached) {
+		return u, err
+	}
 
-			return KittyDisplayUnit{
-				// don't resend placement command
-				ReplacementText: i.DisplayUnicodePlaceholder(),
-			}, nil
-		}
+	// image was not downloaded yet, download, convert and save
+	decoded, err, _ := d.downloads.Do(unit.ID, func() (any, error) {
+		return d.download(unit)
+	})
+	if err != nil {
+		return KittyDisplayUnit{}, err
+	}
+
+	img, ok := decoded.(DecodedImage)
+	if !ok {
+		return KittyDisplayUnit{}, fmt.Errorf("unexpected download result type %T", decoded)
+	}
+
+	d.placeMu.Lock()
+	defer d.placeMu.Unlock()
+
+	// a concurrent call may have placed the image already
+	if u, ok := d.placedUnit(unit.ID); ok {
+		return u, nil
+	}
+
+	return d.place(unit.ID, img), nil
+}
+
+// ConvertCached returns the display unit for an image already placed in this session or cached
+// on disk. Returns ErrImageNotCached if the image has to be downloaded first (see Convert).
+// Fast enough to be called from the UI event loop.
+func (d *DisplayManager) ConvertCached(unit DisplayUnit) (KittyDisplayUnit, error) {
+	d.placeMu.Lock()
+	defer d.placeMu.Unlock()
+
+	// 1st: image was already placed in this session, reusing placement
+	if u, ok := d.placedUnit(unit.ID); ok {
+		return u, nil
 	}
 
 	// 2nd: image was not placed in session yet, but is already cached on FS
-	incrementID := globalImagePlacementIDCounter.Add(1)
-
 	cachedDecoded, found, err := d.openCached(unit)
 	if err != nil {
 		log.Logger.Warn().Err(err).Str("id", unit.ID).Msg("failed to open cached image, will re-download")
 	}
 
-	if found {
-		cachedDecoded.ID = incrementID
-		cachedDecoded.lastUsed = time.Now()
-		d.applyLayout(&cachedDecoded)
-
-		//log.Logger.Info().Str("id", unit.ID).Int32("placement-id", cachedDecoded.ID).Msg("load image from storage cache")
-
-		globalPlacedImages.Store(unit.ID, cachedDecoded)
-		return KittyDisplayUnit{
-			PrepareCommand:  d.prepare(cachedDecoded),
-			ReplacementText: cachedDecoded.DisplayUnicodePlaceholder(),
-		}, nil
+	if !found {
+		return KittyDisplayUnit{}, ErrImageNotCached
 	}
 
-	// 3rd: image was not downloaded yet, download and convert and save
+	return d.place(unit.ID, cachedDecoded), nil
+}
+
+// placedUnit returns the display unit of an image already placed in this session.
+// Must be called with placeMu held.
+func (d *DisplayManager) placedUnit(id string) (KittyDisplayUnit, bool) {
+	cached, ok := globalPlacedImages.Load(id)
+	if !ok {
+		return KittyDisplayUnit{}, false
+	}
+
+	i, ok := cached.(DecodedImage)
+	if !ok {
+		log.Logger.Error().Str("id", id).Type("type", cached).Msg("unexpected type in session cache")
+		globalPlacedImages.Delete(id)
+		return KittyDisplayUnit{}, false
+	}
+
+	i.lastUsed = time.Now()
+	globalPlacedImages.Store(id, i)
+
+	return KittyDisplayUnit{
+		// don't resend placement command
+		ReplacementText: i.DisplayUnicodePlaceholder(),
+	}, true
+}
+
+// place assigns a new placement ID to the image and stores it in the session.
+// Must be called with placeMu held.
+func (d *DisplayManager) place(id string, img DecodedImage) KittyDisplayUnit {
+	img.ID = globalImagePlacementIDCounter.Add(1)
+	img.lastUsed = time.Now() // last used for clean up
+	d.applyLayout(&img)       // set rows/cols for current layout
+	globalPlacedImages.Store(id, img)
+
+	return KittyDisplayUnit{
+		PrepareCommand:  d.prepare(img),
+		ReplacementText: img.DisplayUnicodePlaceholder(),
+	}
+}
+
+// download loads, decodes and caches the image on disk.
+func (d *DisplayManager) download(unit DisplayUnit) (DecodedImage, error) {
+	d.downloadSlots <- struct{}{}
+	defer func() { <-d.downloadSlots }()
+
 	imageBody, contentType, err := unit.Load()
 	if err != nil {
-		return KittyDisplayUnit{}, err
+		return DecodedImage{}, err
 	}
 
 	log.Logger.Info().Str("id", unit.ID).Str("type", contentType).Msg("downloaded image")
@@ -271,25 +349,22 @@ func (d *DisplayManager) Convert(unit DisplayUnit) (KittyDisplayUnit, error) {
 	decoded, err := d.convertImageBytes(imageBody, unit, contentType)
 	if err != nil {
 		log.Logger.Err(err).Any("unit", unit).Send()
-		return KittyDisplayUnit{}, err
+		return DecodedImage{}, err
 	}
 
-	decoded.ID = incrementID                                   // set id
-	decoded.lastUsed = time.Now()                              // last used for clean up
-	d.applyLayout(&decoded)                                    // set rows/cols for current layout
-	globalPlacedImages.Store(unit.ID, decoded)                 // store placement
-	if err := d.cacheDecodedImage(decoded, unit); err != nil { // cache decoded image
+	d.applyLayout(&decoded) // set rows/cols for current layout
+	if err := d.cacheDecodedImage(decoded, unit); err != nil {
 		log.Logger.Warn().Err(err).Str("id", unit.ID).Msg("failed to cache decoded image")
 	}
 
-	return KittyDisplayUnit{
-		PrepareCommand:  d.prepare(decoded),
-		ReplacementText: decoded.DisplayUnicodePlaceholder(),
-	}, nil
+	return decoded, nil
 }
 
 func (d *DisplayManager) CleanupOldImagesCommand(maxAge time.Duration) string {
 	var cmd strings.Builder
+
+	d.placeMu.Lock()
+	defer d.placeMu.Unlock()
 
 	globalPlacedImages.Range(func(key, value any) bool {
 		c, ok := value.(DecodedImage)
@@ -507,26 +582,20 @@ func (d *DisplayManager) cacheDecodedImage(decoded DecodedImage, unit DisplayUni
 	}
 
 	metaImageFilePath := filepath.Join(cacheDir, fmt.Sprintf("%s.json", filepath.Clean(unit.ID)))
-	//log.Logger.Info().Str("path", metaImageFilePath).Msg("trying to cache decoded")
-
-	f, err := d.fs.Create(metaImageFilePath)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
 
 	encoded, err := easyjson.Marshal(decoded)
 	if err != nil {
 		return err
 	}
 
-	_, err = f.Write(encoded)
-	if err != nil {
+	// write to a temporary file and rename, so concurrent readers (ConvertCached) never see
+	// a partially written file
+	tmpPath := metaImageFilePath + ".tmp"
+	if err := afero.WriteFile(d.fs, tmpPath, encoded, 0o644); err != nil {
 		return err
 	}
 
-	return nil
+	return d.fs.Rename(tmpPath, metaImageFilePath)
 }
 
 func (d *DisplayManager) saveKittyFormattedImage(buff []byte, unit DisplayUnit, offset int) (string, error) {

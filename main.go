@@ -49,6 +49,9 @@ func init() {
 
 const (
 	defaultClientID = "jliqj1q6nmp0uh5ofangdx4iac7yd9"
+
+	// imageDownloadTimeout bounds a single emote or badge download, including the body
+	imageDownloadTimeout = 10 * time.Second
 )
 
 var (
@@ -228,9 +231,12 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 			}
 
 			var (
-				emoteReplacer  = emote.NewReplacer(http.DefaultClient, emoteCache, false, theme, nil)
-				badgeReplacer  = badge.NewReplacer(http.DefaultClient, badgeCache, false, theme, nil)
-				displayManager *kittyimg.DisplayManager
+				// images are downloaded in the background, but a hanging request would leave the
+				// emote displayed as text forever
+				imageHTTPClient = &http.Client{Timeout: imageDownloadTimeout}
+				emoteReplacer   = emote.NewReplacer(imageHTTPClient, emoteCache, false, theme, nil)
+				badgeReplacer   = badge.NewReplacer(imageHTTPClient, badgeCache, false, theme, nil)
+				displayManager  *kittyimg.DisplayManager
 			)
 
 			if settings.Chat.GraphicEmotes || settings.Chat.GraphicBadges {
@@ -249,11 +255,11 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 				})
 
 				if settings.Chat.GraphicEmotes {
-					emoteReplacer = emote.NewReplacer(http.DefaultClient, emoteCache, true, theme, displayManager)
+					emoteReplacer = emote.NewReplacer(imageHTTPClient, emoteCache, true, theme, displayManager)
 				}
 
 				if settings.Chat.GraphicBadges {
-					badgeReplacer = badge.NewReplacer(http.DefaultClient, badgeCache, true, theme, displayManager)
+					badgeReplacer = badge.NewReplacer(imageHTTPClient, badgeCache, true, theme, displayManager)
 				}
 
 				defer func() {
