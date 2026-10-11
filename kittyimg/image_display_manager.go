@@ -64,12 +64,12 @@ type DecodedImageFrame struct {
 	DelayInMS   int    `json:"delay_in_ms"`
 }
 
+// PrepareCommand transmits the image and creates its virtual placement.
+// Animated images are sent with all frames for the terminal to play them (kitty).
 func (i DecodedImage) PrepareCommand() string {
 	// not animated
 	if len(i.Images) == 1 {
-		transmitCMD := fmt.Sprintf("\x1b_Gf=32,i=%d,t=f,q=2,s=%d,v=%d,o=z;%s\x1b\\", i.ID, i.Images[0].Width, i.Images[0].Height, i.Images[0].EncodedPath)
-		placementCMD := fmt.Sprintf("\x1b_Ga=p,i=%d,p=%d,q=2,U=1,r=%d,c=%d\x1b\\", i.ID, i.ID, i.rows(), i.Cols)
-		return transmitCMD + placementCMD
+		return i.FirstFramePrepareCommand()
 	}
 
 	// is animated
@@ -94,6 +94,13 @@ func (i DecodedImage) PrepareCommand() string {
 	fmt.Fprintf(&b, "\x1b_Ga=p,i=%d,p=%d,q=2,U=1,r=%d,c=%d\x1b\\", i.ID, i.ID, i.rows(), i.Cols)
 
 	return b.String()
+}
+
+// FirstFramePrepareCommand transmits only the first frame and creates the virtual placement.
+func (i DecodedImage) FirstFramePrepareCommand() string {
+	transmitCMD := fmt.Sprintf("\x1b_Gf=32,i=%d,t=f,q=2,s=%d,v=%d,o=z;%s\x1b\\", i.ID, i.Images[0].Width, i.Images[0].Height, i.Images[0].EncodedPath)
+	placementCMD := fmt.Sprintf("\x1b_Ga=p,i=%d,p=%d,q=2,U=1,r=%d,c=%d\x1b\\", i.ID, i.ID, i.rows(), i.Cols)
+	return transmitCMD + placementCMD
 }
 
 // DisplayUnicodePlaceholder returns the placeholder text for the last (bottom) row of the image,
@@ -137,11 +144,14 @@ type DisplayManager struct {
 	fs                    afero.Fs
 	cellWidth, cellHeight float32
 	rows                  int
+	animation             AnimationMode
+	animator              *animator
 }
 
 // DisplayOptions configures how images are displayed.
 type DisplayOptions struct {
-	Rows int // terminal rows an image spans, clamped to [1, MaxRows]
+	Rows      int           // terminal rows an image spans, clamped to [1, MaxRows]
+	Animation AnimationMode // how animated images are played
 }
 
 // NewDisplayManager creates a display manager for a terminal with the given cell size in pixels.
@@ -151,6 +161,42 @@ func NewDisplayManager(fs afero.Fs, cellWidth, cellHeight float32, opts DisplayO
 		cellWidth:  cellWidth,
 		cellHeight: cellHeight,
 		rows:       min(max(opts.Rows, 1), MaxRows),
+		animation:  opts.Animation,
+		animator:   newAnimator(),
+	}
+}
+
+// AnimatesClientSide reports whether the caller must drive animations via AnimationFrame.
+func (d *DisplayManager) AnimatesClientSide() bool {
+	return d.animation == AnimationClient
+}
+
+// TrackVisibleImages records which animated images are contained in the rendered view.
+// Only visible images are animated by AnimationFrame.
+func (d *DisplayManager) TrackVisibleImages(view string) {
+	if d.animation != AnimationClient {
+		return
+	}
+
+	d.animator.setVisible(view)
+}
+
+// AnimationFrame returns the terminal commands advancing visible animated images to their
+// current frame and the delay after which it should be called again.
+func (d *DisplayManager) AnimationFrame(now time.Time) (string, time.Duration) {
+	return d.animator.frame(now)
+}
+
+// prepare returns the command transmitting a newly placed image according to the animation mode.
+func (d *DisplayManager) prepare(decoded DecodedImage) string {
+	switch d.animation {
+	case AnimationClient:
+		d.animator.register(decoded, time.Now())
+		return decoded.FirstFramePrepareCommand()
+	case AnimationOff:
+		return decoded.FirstFramePrepareCommand()
+	default:
+		return decoded.PrepareCommand()
 	}
 }
 
@@ -207,7 +253,7 @@ func (d *DisplayManager) Convert(unit DisplayUnit) (KittyDisplayUnit, error) {
 
 		globalPlacedImages.Store(unit.ID, cachedDecoded)
 		return KittyDisplayUnit{
-			PrepareCommand:  cachedDecoded.PrepareCommand(),
+			PrepareCommand:  d.prepare(cachedDecoded),
 			ReplacementText: cachedDecoded.DisplayUnicodePlaceholder(),
 		}, nil
 	}
@@ -237,7 +283,7 @@ func (d *DisplayManager) Convert(unit DisplayUnit) (KittyDisplayUnit, error) {
 	}
 
 	return KittyDisplayUnit{
-		PrepareCommand:  decoded.PrepareCommand(),
+		PrepareCommand:  d.prepare(decoded),
 		ReplacementText: decoded.DisplayUnicodePlaceholder(),
 	}, nil
 }
@@ -254,6 +300,7 @@ func (d *DisplayManager) CleanupOldImagesCommand(maxAge time.Duration) string {
 		if time.Since(c.lastUsed) > maxAge {
 			fmt.Fprintf(&cmd, "\x1b_Ga=D,i=%d,q=2\x1b\\", c.ID)
 			globalPlacedImages.Delete(key)
+			d.animator.unregister(c.ID)
 		}
 		return true
 	})

@@ -36,3 +36,17 @@ func TestSettings_ValidateGraphicScale(t *testing.T) {
 		require.ErrorContains(t, s.validate(), "chat.graphic_scale")
 	}
 }
+
+func TestSettings_ValidateEmoteAnimation(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range EmoteAnimationModes {
+		s := BuildDefaultSettings()
+		s.Chat.EmoteAnimation = mode
+		require.NoError(t, s.validate(), "mode %q", mode)
+	}
+
+	s := BuildDefaultSettings()
+	s.Chat.EmoteAnimation = "fast"
+	require.ErrorContains(t, s.validate(), "chat.emote_animation")
+}
