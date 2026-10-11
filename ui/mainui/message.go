@@ -91,6 +91,9 @@ type imageCleanupTickMessage struct {
 	deletionCommand string
 }
 
+// imageAnimationTickMessage advances client side animated images.
+type imageAnimationTickMessage struct{}
+
 // joinChannelMessage comes when user confirms channel which should be joined
 type joinChannelMessage struct {
 	tabKind TabKind

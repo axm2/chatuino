@@ -11,6 +11,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Emote animation modes, see ChatSettings.EmoteAnimation.
+const (
+	EmoteAnimationAuto   = "auto"   // native in kitty, client side elsewhere
+	EmoteAnimationNative = "native" // terminal plays animations (kitty graphics animation)
+	EmoteAnimationClient = "client" // Chatuino swaps frames (terminals without animation support, e.g. Ghostty)
+	EmoteAnimationOff    = "off"    // first frame only
+)
+
+// EmoteAnimationModes lists all valid values for ChatSettings.EmoteAnimation, empty defaults to auto.
+var EmoteAnimationModes = []string{"", EmoteAnimationAuto, EmoteAnimationNative, EmoteAnimationClient, EmoteAnimationOff}
+
 const (
 	settingsFileName = "settings.yaml"
 )
@@ -33,6 +44,7 @@ type ModerationSettings struct {
 type ChatSettings struct {
 	GraphicBadges              bool   `yaml:"graphic_badges"`
 	GraphicEmotes              bool   `yaml:"graphic_emotes"`
+	EmoteAnimation             string `yaml:"emote_animation"` // auto, native, client or off, default: auto
 	DisableBadges              bool   `yaml:"disable_badges"`
 	DisablePaddingWrappedLines bool   `yaml:"disable_padding_wrapped_lines"`
 	SmoothScroll               bool   `yaml:"smooth_scroll"`
@@ -85,6 +97,10 @@ func (s Settings) validate() error {
 		if slices.Contains(predefinedCommands, c.Trigger) {
 			return fmt.Errorf("custom command trigger %q is already a default command", c.Trigger)
 		}
+	}
+
+	if !slices.Contains(EmoteAnimationModes, s.Chat.EmoteAnimation) {
+		return fmt.Errorf("chat.emote_animation must be one of %s, got %q", strings.Join(EmoteAnimationModes[1:], ", "), s.Chat.EmoteAnimation)
 	}
 
 	if slices.Contains(s.BlockSettings.Users, "") {
