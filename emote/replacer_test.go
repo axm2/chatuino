@@ -358,7 +358,15 @@ func (m *mockEmoteStore) LoadSetForeignEmote(id, text string) Emote {
 }
 
 type mockDisplayManager struct {
-	convertFunc func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+	convertFunc       func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+	convertCachedFunc func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+}
+
+func (m *mockDisplayManager) ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+	if m.convertCachedFunc != nil {
+		return m.convertCachedFunc(unit)
+	}
+	return kittyimg.KittyDisplayUnit{}, kittyimg.ErrImageNotCached
 }
 
 func (m *mockDisplayManager) Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
@@ -366,4 +374,41 @@ func (m *mockDisplayManager) Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyD
 		return m.convertFunc(unit)
 	}
 	return kittyimg.KittyDisplayUnit{}, nil
+}
+
+func TestReplacer_ReplaceCached(t *testing.T) {
+	t.Parallel()
+
+	store := &mockEmoteStore{
+		emotes: map[string]Emote{
+			"Kappa":     {ID: "kappa-id", Text: "Kappa", Platform: Twitch},
+			"pepeLaugh": {ID: "pepe-id", Text: "pepeLaugh", Platform: SevenTV},
+		},
+	}
+
+	mockDisplay := &mockDisplayManager{
+		convertFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+			t.Fatal("ReplaceCached must never call the blocking Convert")
+			return kittyimg.KittyDisplayUnit{}, nil
+		},
+		convertCachedFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+			if unit.ID == "twitch.kappa-id" {
+				return kittyimg.KittyDisplayUnit{PrepareCommand: "prepare-kappa", ReplacementText: "image-kappa"}, nil
+			}
+			return kittyimg.KittyDisplayUnit{}, kittyimg.ErrImageNotCached
+		},
+	}
+
+	replacer := NewReplacer(nil, store, true, save.Theme{}, mockDisplay)
+
+	command, replacement, pending, err := replacer.ReplaceCached("", "Kappa pepeLaugh", nil)
+	require.NoError(t, err)
+	require.True(t, pending)
+	require.Equal(t, "prepare-kappa", command)
+	require.Equal(t, "image-kappa", replacement["Kappa"])
+	require.Contains(t, replacement["pepeLaugh"], "pepeLaugh", "uncached emote falls back to text")
+
+	_, _, pending, err = replacer.ReplaceCached("", "Kappa", nil)
+	require.NoError(t, err)
+	require.False(t, pending)
 }

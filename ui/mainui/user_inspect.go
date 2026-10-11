@@ -38,6 +38,8 @@ type userInspect struct {
 	accountID       string // account id from chatuino user
 	badges          []twitchirc.Badge
 	formattedBadges wordReplacement
+	// imageKey of the event formattedBadges were taken from, non-zero while badges wait for images
+	formattedBadgesImageKey uint64
 
 	ivr     *ivr.API
 	deps    *DependencyContainer
@@ -224,6 +226,12 @@ func (u *userInspect) Update(msg tea.Msg) (*userInspect, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
+	// header badges of the inspected user may be waiting for images
+	if resolved, ok := msg.(imagesResolvedMessage); ok && resolved.imageKey != 0 && resolved.imageKey == u.formattedBadgesImageKey && resolved.badgeReplacement != nil {
+		u.formattedBadges = resolved.badgeReplacement
+		u.formattedBadgesImageKey = 0
+	}
+
 	chatEvent, ok := msg.(chatEventMessage)
 
 	// we don't need to intervene if the message is not a chat event, the window can handle it
@@ -268,6 +276,7 @@ func (u *userInspect) Update(msg tea.Msg) (*userInspect, tea.Cmd) {
 	if msg, ok := chatEvent.message.(*twitchirc.PrivateMessage); ok && strings.EqualFold(msg.LoginName, u.user) {
 		u.badges = msg.Badges
 		u.formattedBadges = chatEvent.displayModifier.badgeReplacement
+		u.formattedBadgesImageKey = chatEvent.imageKey
 	}
 
 	u.chatWindow, cmd = u.chatWindow.Update(msg)

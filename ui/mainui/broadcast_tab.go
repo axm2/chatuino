@@ -574,6 +574,17 @@ func (t *broadcastTab) Update(msg tea.Msg) (tab, tea.Cmd) {
 		}
 		cmd = t.handleEventSubMessage(msg.Message)
 		return t, cmd
+	case imagesResolvedMessage:
+		// forward regardless of state, entries waiting for images may be in either window
+		if t.chatWindow != nil {
+			t.chatWindow, cmd = t.chatWindow.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		if t.userInspect != nil {
+			t.userInspect, cmd = t.userInspect.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		return t, tea.Batch(cmds...)
 	case chatEventMessage: // delegate message event to chat window
 		// ignore all messages that don't target this account and channel
 
@@ -1596,6 +1607,7 @@ func (t *broadcastTab) handleOpenUserInspect(args []string) tea.Cmd {
 			channelID:               t.channelID,
 			message:                 e.Event.message,
 			displayModifier:         e.Event.displayModifier,
+			imageKey:                e.Event.imageKey,
 			channelGuestID:          e.Event.channelGuestID,
 			channelGuestDisplayName: e.Event.channelGuestDisplayName,
 		})

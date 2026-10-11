@@ -38,6 +38,19 @@ type chatEventMessage struct {
 	// is rendered (e.g. image upload/placement). Emitted as tea.Raw by Root
 	// before forwarding to tabs; not consumed by tabs themselves.
 	prepareCommand string
+
+	// imageKey is non-zero if some emote/badge images were not cached yet and are displayed as
+	// text until they are downloaded in the background, see imagesResolvedMessage.
+	imageKey uint64
+}
+
+// imagesResolvedMessage comes when the images of a chat event, displayed as text so far,
+// were downloaded. Chat windows swap the text for the images.
+type imagesResolvedMessage struct {
+	imageKey         uint64
+	prepareCommand   string          // emitted as tea.Raw by Root, like chatEventMessage.prepareCommand
+	wordReplacements wordReplacement // emote replacements, merged into the existing ones
+	badgeReplacement wordReplacement // replaces existing badges, nil if badges could not be resolved
 }
 
 type (
@@ -90,6 +103,9 @@ type appStateSaveMessage struct{}
 type imageCleanupTickMessage struct {
 	deletionCommand string
 }
+
+// imageAnimationTickMessage advances client side animated images.
+type imageAnimationTickMessage struct{}
 
 // joinChannelMessage comes when user confirms channel which should be joined
 type joinChannelMessage struct {

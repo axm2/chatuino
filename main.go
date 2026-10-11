@@ -49,6 +49,9 @@ func init() {
 
 const (
 	defaultClientID = "jliqj1q6nmp0uh5ofangdx4iac7yd9"
+
+	// imageDownloadTimeout bounds a single emote or badge download, including the body
+	imageDownloadTimeout = 10 * time.Second
 )
 
 var (
@@ -228,9 +231,12 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 			}
 
 			var (
-				emoteReplacer  = emote.NewReplacer(http.DefaultClient, emoteCache, false, theme, nil)
-				badgeReplacer  = badge.NewReplacer(http.DefaultClient, badgeCache, false, theme, nil)
-				displayManager *kittyimg.DisplayManager
+				// images are downloaded in the background, but a hanging request would leave the
+				// emote displayed as text forever
+				imageHTTPClient = &http.Client{Timeout: imageDownloadTimeout}
+				emoteReplacer   = emote.NewReplacer(imageHTTPClient, emoteCache, false, theme, nil)
+				badgeReplacer   = badge.NewReplacer(imageHTTPClient, badgeCache, false, theme, nil)
+				displayManager  *kittyimg.DisplayManager
 			)
 
 			if settings.Chat.GraphicEmotes || settings.Chat.GraphicBadges {
@@ -243,14 +249,16 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 					return fmt.Errorf("failed to get terminal size: %w", err)
 				}
 
-				displayManager = kittyimg.NewDisplayManager(afero.NewOsFs(), cellWidth, cellHeight)
+				displayManager = kittyimg.NewDisplayManager(afero.NewOsFs(), cellWidth, cellHeight, kittyimg.DisplayOptions{
+					Animation: emoteAnimationMode(settings.Chat.EmoteAnimation),
+				})
 
 				if settings.Chat.GraphicEmotes {
-					emoteReplacer = emote.NewReplacer(http.DefaultClient, emoteCache, true, theme, displayManager)
+					emoteReplacer = emote.NewReplacer(imageHTTPClient, emoteCache, true, theme, displayManager)
 				}
 
 				if settings.Chat.GraphicBadges {
-					badgeReplacer = badge.NewReplacer(http.DefaultClient, badgeCache, true, theme, displayManager)
+					badgeReplacer = badge.NewReplacer(imageHTTPClient, badgeCache, true, theme, displayManager)
 				}
 
 				defer func() {
@@ -500,4 +508,24 @@ func setupLogFile() (*os.File, error) {
 	}
 
 	return f, nil
+}
+
+// emoteAnimationMode resolves the emote_animation setting. Auto uses the terminals native
+// animation support in kitty and swaps frames client side in other terminals (Ghostty
+// accepts, but does not play kitty animations).
+func emoteAnimationMode(setting string) kittyimg.AnimationMode {
+	switch setting {
+	case save.EmoteAnimationNative:
+		return kittyimg.AnimationNative
+	case save.EmoteAnimationClient:
+		return kittyimg.AnimationClient
+	case save.EmoteAnimationOff:
+		return kittyimg.AnimationOff
+	}
+
+	if _, isKitty := os.LookupEnv("KITTY_WINDOW_ID"); isKitty {
+		return kittyimg.AnimationNative
+	}
+
+	return kittyimg.AnimationClient
 }
