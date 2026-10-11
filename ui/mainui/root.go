@@ -360,6 +360,7 @@ func (r *Root) Init() tea.Cmd {
 		},
 		r.tickPollStreamInfos(),
 		r.imageCleanUpCommand(),
+		r.imageAnimationTickCommand(0),
 		r.checkVersionCommand(),
 	)
 }
@@ -380,6 +381,12 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, r.imageCleanUpCommand())
 		return r, tea.Batch(cmds...)
+	case imageAnimationTickMessage:
+		frame, next := r.dependencies.ImageDisplayManager.AnimationFrame(time.Now())
+		if frame != "" {
+			return r, tea.Batch(tea.Raw(frame), r.imageAnimationTickCommand(next))
+		}
+		return r, r.imageAnimationTickCommand(next)
 	case versionCheckMessage:
 		return r, r.handleVersionCheck(msg)
 	case joinChannelMessage:
@@ -738,7 +745,14 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r *Root) View() tea.View {
-	v := tea.NewView(r.renderView())
+	content := r.renderView()
+
+	// only images visible in the rendered view are animated
+	if r.dependencies.ImageDisplayManager != nil {
+		r.dependencies.ImageDisplayManager.TrackVisibleImages(content)
+	}
+
+	v := tea.NewView(content)
 	v.AltScreen = true
 	v.WindowTitle = "Chatuino"
 	return v
@@ -1435,6 +1449,18 @@ func (r *Root) buildChatEventMessage(accountID string, tabID string, ircer twitc
 
 	event.prepareCommand = replaceCommand
 	return event
+}
+
+// imageAnimationTickCommand returns a command that ticks after delay to advance animated
+// images, if animations are driven client side.
+func (r *Root) imageAnimationTickCommand(delay time.Duration) tea.Cmd {
+	if r.dependencies.ImageDisplayManager == nil || !r.dependencies.ImageDisplayManager.AnimatesClientSide() {
+		return nil
+	}
+
+	return tea.Tick(delay, func(_ time.Time) tea.Msg {
+		return imageAnimationTickMessage{}
+	})
 }
 
 // imageCleanUpCommand returns a command that ticks after 1 minute and

@@ -244,7 +244,8 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 				}
 
 				displayManager = kittyimg.NewDisplayManager(afero.NewOsFs(), cellWidth, cellHeight, kittyimg.DisplayOptions{
-					Rows: settings.Chat.GraphicScale,
+					Rows:      settings.Chat.GraphicScale,
+					Animation: emoteAnimationMode(settings.Chat.EmoteAnimation),
 				})
 
 				if settings.Chat.GraphicEmotes {
@@ -502,4 +503,24 @@ func setupLogFile() (*os.File, error) {
 	}
 
 	return f, nil
+}
+
+// emoteAnimationMode resolves the emote_animation setting. Auto uses the terminals native
+// animation support in kitty and swaps frames client side in other terminals (Ghostty
+// accepts, but does not play kitty animations).
+func emoteAnimationMode(setting string) kittyimg.AnimationMode {
+	switch setting {
+	case save.EmoteAnimationNative:
+		return kittyimg.AnimationNative
+	case save.EmoteAnimationClient:
+		return kittyimg.AnimationClient
+	case save.EmoteAnimationOff:
+		return kittyimg.AnimationOff
+	}
+
+	if _, isKitty := os.LookupEnv("KITTY_WINDOW_ID"); isKitty {
+		return kittyimg.AnimationNative
+	}
+
+	return kittyimg.AnimationClient
 }
