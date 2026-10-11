@@ -28,7 +28,15 @@ func (m *mockBadgeCache) MatchBadgeSet(broadcasterID string, ircBadge []twitchir
 }
 
 type mockDisplayManager struct {
-	convertFunc func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+	convertFunc       func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+	convertCachedFunc func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+}
+
+func (m *mockDisplayManager) ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+	if m.convertCachedFunc != nil {
+		return m.convertCachedFunc(unit)
+	}
+	return kittyimg.KittyDisplayUnit{}, kittyimg.ErrImageNotCached
 }
 
 func (m *mockDisplayManager) Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
@@ -36,6 +44,45 @@ func (m *mockDisplayManager) Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyD
 		return m.convertFunc(unit)
 	}
 	return kittyimg.KittyDisplayUnit{}, nil
+}
+
+func TestReplacer_ReplaceCached(t *testing.T) {
+	t.Parallel()
+
+	cache := &mockBadgeCache{
+		matchBadgeSetFunc: func(broadcasterID string, ircBadge []twitchirc.Badge) map[string]twitchapi.BadgeVersion {
+			return map[string]twitchapi.BadgeVersion{
+				"subscriber": {ID: "1", Title: "Subscriber"},
+				"premium":    {ID: "1", Title: "Prime Gaming"},
+			}
+		},
+	}
+
+	displayManager := &mockDisplayManager{
+		convertFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+			t.Fatal("ReplaceCached must never call the blocking Convert")
+			return kittyimg.KittyDisplayUnit{}, nil
+		},
+		convertCachedFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+			if unit.ID == "b1subscriber1" {
+				return kittyimg.KittyDisplayUnit{PrepareCommand: "prepare-sub", ReplacementText: "image-sub"}, nil
+			}
+			return kittyimg.KittyDisplayUnit{}, kittyimg.ErrImageNotCached
+		},
+	}
+
+	replacer := &Replacer{
+		cache:          cache,
+		displayManager: displayManager,
+		enableGraphics: true,
+	}
+
+	prepare, formatted, pending, err := replacer.ReplaceCached("b1", []twitchirc.Badge{{Name: "subscriber"}, {Name: "premium"}})
+	require.NoError(t, err)
+	require.True(t, pending)
+	require.Equal(t, "prepare-sub", prepare)
+	require.Equal(t, "image-sub", formatted["subscriber"])
+	require.Equal(t, "Prime Gaming", formatted["premium"], "uncached badge falls back to text")
 }
 
 func TestReplacer_Replace(t *testing.T) {

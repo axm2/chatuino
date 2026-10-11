@@ -2,6 +2,7 @@ package emote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"io"
@@ -23,6 +24,7 @@ type EmoteStore interface {
 
 type DisplayManager interface {
 	Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
+	ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
 }
 
 type Replacer struct {
@@ -55,7 +57,19 @@ func NewReplacer(httpClient *http.Client, store EmoteStore, enableGraphics bool,
 	}
 }
 
+// Replace replaces emotes in content. Downloads missing emote images, which may block for a long time.
 func (i *Replacer) Replace(channelID, content string, emoteList []twitchirc.Emote) (string, map[string]string, error) {
+	cmd, replacements, _, err := i.replace(channelID, content, emoteList, false)
+	return cmd, replacements, err
+}
+
+// ReplaceCached is like Replace but never downloads. Emotes whose images are not cached yet are
+// replaced with colored text and pending is true. Call Replace in the background to resolve them.
+func (i *Replacer) ReplaceCached(channelID, content string, emoteList []twitchirc.Emote) (cmd string, replacements map[string]string, pending bool, err error) {
+	return i.replace(channelID, content, emoteList, true)
+}
+
+func (i *Replacer) replace(channelID, content string, emoteList []twitchirc.Emote, cachedOnly bool) (string, map[string]string, bool, error) {
 	// twitch sends us a list of emotes used in the message, even emotes from other channels (sub emotes)
 	// parse the emote text with the index and replace it from the global store, since its guaranteed
 	// the user has access to the emote
@@ -70,6 +84,7 @@ func (i *Replacer) Replace(channelID, content string, emoteList []twitchirc.Emot
 
 	words := strings.Split(content, " ")
 	replacements := map[string]string{}
+	pending := false
 
 	var cmd strings.Builder
 	for _, word := range words {
@@ -103,14 +118,30 @@ func (i *Replacer) Replace(channelID, content string, emoteList []twitchirc.Emot
 			continue
 		}
 
-		unit, err := i.displayManager.Convert(kittyimg.DisplayUnit{
+		displayUnit := kittyimg.DisplayUnit{
 			Directory:  "emote",
 			ID:         strings.ToLower(fmt.Sprintf("%s.%s", emote.Platform.String(), emote.ID)),
 			IsAnimated: emote.IsAnimated,
 			Load: func() (io.ReadCloser, string, error) {
 				return i.fetchEmote(context.Background(), emote.URL)
 			},
-		})
+		}
+
+		var (
+			unit kittyimg.KittyDisplayUnit
+			err  error
+		)
+		if cachedOnly {
+			unit, err = i.displayManager.ConvertCached(displayUnit)
+		} else {
+			unit, err = i.displayManager.Convert(displayUnit)
+		}
+
+		if errors.Is(err, kittyimg.ErrImageNotCached) {
+			pending = true
+			replacements[word] = i.replaceEmoteColored(emote)
+			continue
+		}
 
 		if err != nil {
 			continue
@@ -120,7 +151,7 @@ func (i *Replacer) Replace(channelID, content string, emoteList []twitchirc.Emot
 		replacements[word] = unit.ReplacementText
 	}
 
-	return cmd.String(), replacements, nil
+	return cmd.String(), replacements, pending, nil
 }
 
 func (i *Replacer) fetchEmote(ctx context.Context, reqURL string) (io.ReadCloser, string, error) {

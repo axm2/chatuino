@@ -38,10 +38,14 @@ type EmoteCache interface {
 
 type EmoteReplacer interface {
 	Replace(channelID, content string, emoteList []twitchirc.Emote) (string, map[string]string, error)
+	// ReplaceCached never downloads, emotes without cached images are replaced as text and pending is true.
+	ReplaceCached(channelID, content string, emoteList []twitchirc.Emote) (cmd string, replacements map[string]string, pending bool, err error)
 }
 
 type BadgeReplacer interface {
 	Replace(broadcasterID string, badgeList []twitchirc.Badge) (string, map[string]string, error)
+	// ReplaceCached never downloads, badges without cached images are replaced as text and pending is true.
+	ReplaceCached(broadcasterID string, badgeList []twitchirc.Badge) (cmd string, badges map[string]string, pending bool, err error)
 	InjectContributorBadge(loginName string, badges map[string]string) (string, error)
 }
 

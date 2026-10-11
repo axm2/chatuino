@@ -215,6 +215,9 @@ func (c *chatWindow) Update(msg tea.Msg) (*chatWindow, tea.Cmd) {
 		return c, c.smoothScrollTickCmd()
 	case chatEventMessage:
 		return c, c.handleMessage(msg)
+	case imagesResolvedMessage:
+		c.handleImagesResolved(msg)
+		return c, nil
 	case tea.KeyPressMsg:
 		if c.focused {
 			switch {
@@ -721,6 +724,87 @@ func (c *chatWindow) handleMessage(msg chatEventMessage) tea.Cmd {
 	}
 
 	return nil
+}
+
+// handleImagesResolved swaps the text placeholders of entries waiting for images with the images.
+func (c *chatWindow) handleImagesResolved(msg imagesResolvedMessage) {
+	if msg.imageKey == 0 {
+		return
+	}
+
+	// newest entries are the most likely to wait for images
+	for _, e := range slices.Backward(c.entries) {
+		if e.Event.imageKey != msg.imageKey {
+			continue
+		}
+
+		// copy instead of mutating, the maps may be shared with entries in other chat windows
+		words := maps.Clone(e.Event.displayModifier.wordReplacements)
+		if words == nil {
+			words = make(wordReplacement, len(msg.wordReplacements))
+		}
+		maps.Copy(words, msg.wordReplacements)
+		e.Event.displayModifier.wordReplacements = words
+
+		if msg.badgeReplacement != nil {
+			e.Event.displayModifier.badgeReplacement = msg.badgeReplacement
+		}
+
+		e.Event.imageKey = 0
+		c.refreshEntry(e)
+	}
+}
+
+// refreshEntry re-renders a single entry after its content changed, without re-rendering all
+// other entries like recalculateLines does.
+func (c *chatWindow) refreshEntry(e *chatEntry) {
+	if e.IsFiltered {
+		return // not displayed, rendered with the new content once the filter changes
+	}
+
+	active := c.activeEntries()
+	idx := slices.Index(active, e)
+	if idx == -1 {
+		return
+	}
+
+	start, end := e.Position.CursorStart, e.Position.CursorEnd
+	if start < 0 || start > end || end >= len(c.lines) {
+		c.recalculateLines()
+		return
+	}
+
+	lines := c.messageToText(e.Event)
+	delta := len(lines) - (end - start + 1)
+
+	c.lines = slices.Replace(c.lines, start, end+1, lines...)
+	e.Position.CursorEnd += delta
+
+	if delta == 0 {
+		return
+	}
+
+	for _, later := range active[idx+1:] {
+		later.Position.CursorStart += delta
+		later.Position.CursorEnd += delta
+	}
+
+	// keep the cursor on the same entry
+	switch {
+	case c.cursor > end:
+		c.cursor += delta
+	case c.cursor >= start:
+		c.cursor = clamp(c.cursor, start, e.Position.CursorEnd)
+	}
+
+	// entry above the viewport changed height, keep the visible content in place
+	lineStartBefore := c.lineStart
+	if end < c.lineStart {
+		c.lineStart += delta
+	}
+
+	c.updatePort()
+	c.smoothLineStart += float64(c.lineStart - lineStartBefore)
 }
 
 func (c *chatWindow) handleTimeoutMessage(msg chatEventMessage) {
