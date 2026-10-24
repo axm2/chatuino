@@ -130,13 +130,12 @@ func TestAnimator_FrameBudget(t *testing.T) {
 func TestScanPlaceholderImageIDs(t *testing.T) {
 	t.Parallel()
 
-	multiRow := DecodedImage{ID: 0x7DA943, Cols: 2, Rows: 2}
+	wide := DecodedImage{ID: 0x7DA943, Cols: 2}
 	single := DecodedImage{ID: 256, Cols: 1}
 
 	view := strings.Join([]string{
 		"\x1b[38;2;1;2;3muser\x1b[39m: hi " + single.DisplayUnicodePlaceholder(), // user color is not an image
-		strings.Join(PlaceholderRowsAbove(multiRow.DisplayUnicodePlaceholder(), 2), "\n"),
-		multiRow.DisplayUnicodePlaceholder(),
+		wide.DisplayUnicodePlaceholder() + " " + wide.DisplayUnicodePlaceholder(),
 		"\x1b[38;2;300;0;0m\U0010EEEE", // invalid component
 		"\x1b[38;2;1;2m\U0010EEEE",     // missing component
 		"\x1b[38;2;0;0;7m",             // truncated at end
@@ -164,7 +163,7 @@ func TestDisplayManager_AnimationModes(t *testing.T) {
 	for _, tt := range tests {
 		resetGlobalImageState()
 
-		dm := NewDisplayManager(afero.NewMemMapFs(), 10, 10, DisplayOptions{Rows: 1, Animation: tt.mode})
+		dm := NewDisplayManager(afero.NewMemMapFs(), 10, 10, DisplayOptions{Animation: tt.mode})
 		require.Equal(t, tt.mode == AnimationClient, dm.AnimatesClientSide())
 
 		unit, err := dm.Convert(DisplayUnit{

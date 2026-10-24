@@ -2,13 +2,17 @@ package badge
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/julez-dev/chatuino/httputil"
 	"github.com/julez-dev/chatuino/kittyimg"
+	"github.com/julez-dev/chatuino/save"
 	"github.com/julez-dev/chatuino/twitch/twitchapi"
 	"github.com/julez-dev/chatuino/twitch/twitchirc"
 	"github.com/stretchr/testify/require"
@@ -28,15 +32,7 @@ func (m *mockBadgeCache) MatchBadgeSet(broadcasterID string, ircBadge []twitchir
 }
 
 type mockDisplayManager struct {
-	convertFunc       func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
-	convertCachedFunc func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
-}
-
-func (m *mockDisplayManager) ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
-	if m.convertCachedFunc != nil {
-		return m.convertCachedFunc(unit)
-	}
-	return kittyimg.KittyDisplayUnit{}, kittyimg.ErrImageNotCached
+	convertFunc func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
 }
 
 func (m *mockDisplayManager) Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
@@ -44,45 +40,6 @@ func (m *mockDisplayManager) Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyD
 		return m.convertFunc(unit)
 	}
 	return kittyimg.KittyDisplayUnit{}, nil
-}
-
-func TestReplacer_ReplaceCached(t *testing.T) {
-	t.Parallel()
-
-	cache := &mockBadgeCache{
-		matchBadgeSetFunc: func(broadcasterID string, ircBadge []twitchirc.Badge) map[string]twitchapi.BadgeVersion {
-			return map[string]twitchapi.BadgeVersion{
-				"subscriber": {ID: "1", Title: "Subscriber"},
-				"premium":    {ID: "1", Title: "Prime Gaming"},
-			}
-		},
-	}
-
-	displayManager := &mockDisplayManager{
-		convertFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
-			t.Fatal("ReplaceCached must never call the blocking Convert")
-			return kittyimg.KittyDisplayUnit{}, nil
-		},
-		convertCachedFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
-			if unit.ID == "b1subscriber1" {
-				return kittyimg.KittyDisplayUnit{PrepareCommand: "prepare-sub", ReplacementText: "image-sub"}, nil
-			}
-			return kittyimg.KittyDisplayUnit{}, kittyimg.ErrImageNotCached
-		},
-	}
-
-	replacer := &Replacer{
-		cache:          cache,
-		displayManager: displayManager,
-		enableGraphics: true,
-	}
-
-	prepare, formatted, pending, err := replacer.ReplaceCached("b1", []twitchirc.Badge{{Name: "subscriber"}, {Name: "premium"}})
-	require.NoError(t, err)
-	require.True(t, pending)
-	require.Equal(t, "prepare-sub", prepare)
-	require.Equal(t, "image-sub", formatted["subscriber"])
-	require.Equal(t, "Prime Gaming", formatted["premium"], "uncached badge falls back to text")
 }
 
 func TestReplacer_Replace(t *testing.T) {
@@ -103,7 +60,7 @@ func TestReplacer_Replace(t *testing.T) {
 			enableGraphics: true,
 		}
 
-		prepare, formatted, err := replacer.Replace("broadcaster123", []twitchirc.Badge{})
+		prepare, formatted, err := replacer.Replace(t.Context(), "broadcaster123", []twitchirc.Badge{})
 
 		require.NoError(t, err)
 		require.Empty(t, prepare)
@@ -142,7 +99,7 @@ func TestReplacer_Replace(t *testing.T) {
 			{Name: "subscriber", Version: "1"},
 		}
 
-		prepare, formatted, err := replacer.Replace("broadcaster123", badgeList)
+		prepare, formatted, err := replacer.Replace(t.Context(), "broadcaster123", badgeList)
 
 		require.NoError(t, err)
 		require.Equal(t, "prepare_command_1", prepare)
@@ -196,7 +153,7 @@ func TestReplacer_Replace(t *testing.T) {
 			{Name: "vip", Version: "1"},
 		}
 
-		prepare, formatted, err := replacer.Replace("broadcaster123", badgeList)
+		prepare, formatted, err := replacer.Replace(t.Context(), "broadcaster123", badgeList)
 
 		require.NoError(t, err)
 		require.Equal(t, 3, callCount, "Convert should be called 3 times")
@@ -234,7 +191,7 @@ func TestReplacer_Replace(t *testing.T) {
 			{Name: "subscriber", Version: "1"},
 		}
 
-		prepare, formatted, err := replacer.Replace("broadcaster123", badgeList)
+		prepare, formatted, err := replacer.Replace(t.Context(), "broadcaster123", badgeList)
 
 		require.Error(t, err)
 		require.ErrorContains(t, err, "failed to convert")
@@ -280,7 +237,7 @@ func TestReplacer_Replace(t *testing.T) {
 			{Name: "subscriber", Version: "1"},
 		}
 
-		_, _, err := replacer.Replace(broadcasterID, badgeList)
+		_, _, err := replacer.Replace(t.Context(), broadcasterID, badgeList)
 
 		require.NoError(t, err)
 
@@ -323,7 +280,7 @@ func TestReplacer_Replace(t *testing.T) {
 			{Name: "badge3", Version: "3"},
 		}
 
-		_, formatted, err := replacer.Replace("broadcaster123", badgeList)
+		_, formatted, err := replacer.Replace(t.Context(), "broadcaster123", badgeList)
 
 		require.NoError(t, err)
 		require.Len(t, formatted, 3)
@@ -355,7 +312,7 @@ func TestReplacer_Replace(t *testing.T) {
 			enableGraphics: true,
 		}
 
-		prepare, formatted, err := replacer.Replace("broadcaster123", nil)
+		prepare, formatted, err := replacer.Replace(t.Context(), "broadcaster123", nil)
 
 		require.NoError(t, err)
 		require.Empty(t, prepare)
@@ -411,8 +368,53 @@ func TestReplacer_Replace(t *testing.T) {
 			{Name: "subscriber", Version: "1"},
 		}
 
-		_, _, err := replacer.Replace("broadcaster123", badgeList)
+		_, _, err := replacer.Replace(t.Context(), "broadcaster123", badgeList)
 
 		require.NoError(t, err)
 	})
+}
+
+func TestReplacer_DeadlineCancelsBadgeDownload(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: httputil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if _, ok := req.Context().Deadline(); !ok {
+			return nil, fmt.Errorf("download has no deadline")
+		}
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-time.After(time.Second):
+			return nil, fmt.Errorf("download did not receive its caller's deadline")
+		}
+	})}
+	cache := &mockBadgeCache{matchBadgeSetFunc: func(string, []twitchirc.Badge) map[string]twitchapi.BadgeVersion {
+		return map[string]twitchapi.BadgeVersion{"subscriber": {ID: "1", Image_URL_1x: "https://example.com/badge.png"}}
+	}}
+	display := &mockDisplayManager{convertFunc: func(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error) {
+		body, _, err := unit.Load()
+		if body != nil {
+			body.Close()
+		}
+		return kittyimg.KittyDisplayUnit{}, err
+	}}
+	replacer := NewReplacer(client, cache, true, save.BuildDefaultTheme(), display)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	_, replacements, err := replacer.Replace(ctx, "channel", []twitchirc.Badge{{Name: "subscriber", Version: "1"}})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Empty(t, replacements)
+}
+
+func TestReplacer_CancelledContributorPreparationDoesNotMutateBadges(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	replacer := NewReplacer(nil, nil, false, save.BuildDefaultTheme(), nil)
+	badges := map[string]string{}
+	_, err := replacer.InjectContributorBadge(ctx, "julez", badges)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, badges)
 }

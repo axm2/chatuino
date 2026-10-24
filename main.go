@@ -36,6 +36,7 @@ import (
 	"github.com/julez-dev/chatuino/server"
 	"github.com/julez-dev/chatuino/twitch/seventv"
 	"github.com/julez-dev/chatuino/ui/mainui"
+	"github.com/julez-dev/chatuino/ui/tab"
 	_ "github.com/mailru/easyjson"
 	"github.com/rs/zerolog"
 	"github.com/urfave/cli/v3"
@@ -49,9 +50,6 @@ func init() {
 
 const (
 	defaultClientID = "jliqj1q6nmp0uh5ofangdx4iac7yd9"
-
-	// imageDownloadTimeout bounds a single emote or badge download, including the body
-	imageDownloadTimeout = 10 * time.Second
 )
 
 var (
@@ -67,7 +65,7 @@ var maybeLogFile *os.File
 //go:generate go run github.com/mailru/easyjson/easyjson@latest -snake_case -no_std_marshalers -pkg ./emote
 //go:generate go run github.com/mailru/easyjson/easyjson@latest -snake_case -pkg ./twitch/recentmessage
 
-//go:generate go run github.com/vektra/mockery/v3@v3.6.3
+//go:generate go run github.com/vektra/mockery/v3@v3.8.1
 func main() {
 	defer func() {
 		if maybeLogFile != nil {
@@ -220,23 +218,20 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 
 			// If the user has provided an account we can use the users local authentication
 			// Instead of using Chatuino's server to handle requests for emote/badge fetching.
-			clients := make(map[string]mainui.APIClient)
+			clients := make(map[string]tab.ClientCapabilities)
 			if mainAccount, err := accountProvider.GetMainAccount(); err == nil {
 				ttvAPI, err := twitchapi.NewAPI(command.String("client-id"), twitchapi.WithUserAuthentication(accountProvider, serverAPI, mainAccount.ID))
 				if err == nil {
-					clients[mainAccount.ID] = ttvAPI
+					clients[mainAccount.ID] = mainui.NewClientCapabilities(ttvAPI)
 					emoteCache = emote.NewCache(log.Logger, ttvAPI, stvAPI, bttvAPI, ffzAPI)
 					badgeCache = badge.NewCache(ttvAPI)
 				}
 			}
 
 			var (
-				// images are downloaded in the background, but a hanging request would leave the
-				// emote displayed as text forever
-				imageHTTPClient = &http.Client{Timeout: imageDownloadTimeout}
-				emoteReplacer   = emote.NewReplacer(imageHTTPClient, emoteCache, false, theme, nil)
-				badgeReplacer   = badge.NewReplacer(imageHTTPClient, badgeCache, false, theme, nil)
-				displayManager  *kittyimg.DisplayManager
+				emoteReplacer  = emote.NewReplacer(http.DefaultClient, emoteCache, false, theme, nil)
+				badgeReplacer  = badge.NewReplacer(http.DefaultClient, badgeCache, false, theme, nil)
+				displayManager *kittyimg.DisplayManager
 			)
 
 			if settings.Chat.GraphicEmotes || settings.Chat.GraphicBadges {
@@ -255,38 +250,16 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 				})
 
 				if settings.Chat.GraphicEmotes {
-					emoteReplacer = emote.NewReplacer(imageHTTPClient, emoteCache, true, theme, displayManager)
+					emoteReplacer = emote.NewReplacer(http.DefaultClient, emoteCache, true, theme, displayManager)
 				}
 
 				if settings.Chat.GraphicBadges {
-					badgeReplacer = badge.NewReplacer(imageHTTPClient, badgeCache, true, theme, displayManager)
+					badgeReplacer = badge.NewReplacer(http.DefaultClient, badgeCache, true, theme, displayManager)
 				}
 
 				defer func() {
 					io.WriteString(os.Stdout, displayManager.CleanupAllImagesCommand())
 				}()
-			}
-
-			deps := &mainui.DependencyContainer{
-				UserConfig: mainui.UserConfiguration{
-					Settings: settings,
-					Theme:    theme,
-				},
-				Version:              Version,
-				AppStateManager:      appStateManager,
-				Keymap:               keymap,
-				ServerAPI:            serverAPI,
-				AccountProvider:      accountProvider,
-				EmoteCache:           emoteCache,
-				BadgeCache:           badgeCache,
-				EmoteReplacer:        emoteReplacer,
-				BadgeReplacer:        badgeReplacer,
-				ImageDisplayManager:  displayManager,
-				RecentMessageService: recentMessageService,
-				MessageLogger:        messageLogger,
-				Pool:                 pool,
-				APIUserClients:       clients,
-				ChannelHistory:       channelHistoryManager,
 			}
 
 			// Fetch all Accounts
@@ -311,21 +284,20 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 					continue
 				}
 
-				var api mainui.APIClient
-
-				if !acc.IsAnonymous {
-					api, err = twitchapi.NewAPI(command.String("client-id"), twitchapi.WithUserAuthentication(accountProvider, serverAPI, acc.ID))
-					if err != nil {
-						return fmt.Errorf("failed to build api client for %s: %w", acc.DisplayName, err)
-					}
-				} else {
-					api = serverAPI
+				if acc.IsAnonymous {
+					// Anonymous accounts go through the server proxy: read-only, no user
+					// token, so only the base API capability is available.
+					clients[acc.ID] = tab.ClientCapabilities{API: serverAPI}
+					continue
 				}
 
-				clients[acc.ID] = api
-			}
+				ttvAPI, err := twitchapi.NewAPI(command.String("client-id"), twitchapi.WithUserAuthentication(accountProvider, serverAPI, acc.ID))
+				if err != nil {
+					return fmt.Errorf("failed to build api client for %s: %w", acc.DisplayName, err)
+				}
 
-			deps.Accounts = accounts
+				clients[acc.ID] = mainui.NewClientCapabilities(ttvAPI)
+			}
 
 			var initialState *save.AppState
 			if tabSpecs := command.StringSlice("tab"); len(tabSpecs) > 0 {
@@ -336,12 +308,33 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 				initialState = &state
 			}
 
+			root := mainui.NewUI(
+				ctx,
+				messageLoggerChan,
+				settings,
+				theme,
+				keymap,
+				accounts,
+				Version,
+				serverAPI,
+				clients,
+				accountProvider,
+				emoteCache,
+				badgeCache,
+				emoteReplacer,
+				badgeReplacer,
+				displayManager,
+				recentMessageService,
+				messageLogger,
+				pool,
+				appStateManager,
+				channelHistoryManager,
+				initialState,
+			)
+			defer root.Close()
+
 			p := tea.NewProgram(
-				mainui.NewUI(
-					messageLoggerChan,
-					deps,
-					initialState,
-				),
+				root,
 				tea.WithContext(ctx),
 			)
 
@@ -349,6 +342,7 @@ chatuino --tab notification --tab mention --tab user1@streamer1`,
 			pool.SetSend(p.Send)
 
 			final, err := p.Run()
+			root.Close()
 
 			// Close pool after UI exits (before checking error)
 			if closeErr := pool.Close(); closeErr != nil {

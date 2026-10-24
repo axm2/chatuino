@@ -25,17 +25,17 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: "go.mod"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "25"
+          node-version: "26"
           cache: "npm"
           cache-dependency-path: web/package-lock.json
 
@@ -81,6 +81,10 @@ jobs:
         uses: dominikh/staticcheck-action@v1
         with:
           version: latest
+          # Use the Go version from go.mod (set up above) instead of letting the
+          # action install the latest stable Go. Newer Go releases can be ahead of
+          # what staticcheck supports (e.g. Go 1.27 export data breaks staticcheck v0.8.1).
+          install-go: false
 
       - name: Test
         run: |

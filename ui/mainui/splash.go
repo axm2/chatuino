@@ -15,11 +15,11 @@ import (
 var splashArt string
 
 type splash struct {
-	width, height     int
-	keymap            save.KeyMap
-	userConfiguration UserConfiguration
-	spinner           spinner.Model
-	updateInfo        *UpdateInfo
+	width, height int
+	keymap        save.KeyMap
+	theme         save.Theme
+	spinner       spinner.Model
+	updateInfo    *UpdateInfo
 }
 
 func (s splash) Init() tea.Cmd {
@@ -35,26 +35,42 @@ func (s splash) Update(msg tea.Msg) (splash, tea.Cmd) {
 func (s splash) view(loading bool, err error) string {
 	style := lipgloss.NewStyle().AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center).Width(s.width).Height(s.height)
 
-	keyDisplay := strings.Join(s.keymap.Create.Keys(), ", ")
+	highlight := func(keys string) string {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(s.theme.SplashHighlightColor)).Render(keys)
+	}
+
+	// Mention both ways to open a channel. Either binding may be unbound in a
+	// user's keymap, so only render hints for the ones that have keys.
+	hints := make([]string, 0, 2)
+	if keys := strings.Join(s.keymap.Create.Keys(), ", "); keys != "" {
+		hints = append(hints, "Use "+highlight(keys)+" to create a new tab and join a channel")
+	}
+	if keys := strings.Join(s.keymap.QuickJoin.Keys(), ", "); keys != "" {
+		hints = append(hints, "Use "+highlight(keys)+" to quick join a channel")
+	}
+	joinHint := strings.Join(hints, "\n")
 
 	name := strings.Builder{}
-	_, _ = name.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(s.userConfiguration.Theme.SplashHighlightColor)).Render("Cha"))
-	_, _ = name.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(s.userConfiguration.Theme.ChatuinoSplashColor)).Bold(true).Render("tui"))
-	_, _ = name.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(s.userConfiguration.Theme.SplashHighlightColor)).Render("no"))
+	_, _ = name.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(s.theme.SplashHighlightColor)).Render("Cha"))
+	_, _ = name.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(s.theme.ChatuinoSplashColor)).Bold(true).Render("tui"))
+	_, _ = name.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(s.theme.SplashHighlightColor)).Render("no"))
 
 	var help string
-	if loading {
+	switch {
+	case loading:
 		help = s.spinner.View() + " Loading initial state"
-	} else if err != nil {
-		help = err.Error() + "\n"
-		help += "Use " + lipgloss.NewStyle().Foreground(lipgloss.Color(s.userConfiguration.Theme.SplashHighlightColor)).Render(keyDisplay) + " to create a new tab and join a channel"
-	} else {
-		help = "Use " + lipgloss.NewStyle().Foreground(lipgloss.Color(s.userConfiguration.Theme.SplashHighlightColor)).Render(keyDisplay) + " to create a new tab and join a channel"
+	case err != nil:
+		help = err.Error()
+		if joinHint != "" {
+			help += "\n" + joinHint
+		}
+	default:
+		help = joinHint
 	}
 
 	var updateLine string
 	if s.updateInfo != nil && s.updateInfo.HasUpdate {
-		highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(s.userConfiguration.Theme.SplashHighlightColor))
+		highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(s.theme.SplashHighlightColor))
 		updateLine = "\n" + highlightStyle.Render("New update available: "+s.updateInfo.LatestVersion) + " (current: " + s.updateInfo.CurrentVersion + ")"
 	}
 

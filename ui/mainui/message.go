@@ -2,9 +2,8 @@ package mainui
 
 import (
 	"github.com/julez-dev/chatuino/save"
-	"github.com/julez-dev/chatuino/twitch/eventsub"
 	"github.com/julez-dev/chatuino/twitch/twitchapi"
-	"github.com/julez-dev/chatuino/twitch/twitchirc"
+	"github.com/julez-dev/chatuino/ui/tab"
 )
 
 // persistedDataLoadedMessage comes when state and user data is loaded
@@ -15,76 +14,6 @@ type persistedDataLoadedMessage struct {
 	channelSuggestions []string
 }
 
-// chatEventMessage comes when we receive a IRC event
-type chatEventMessage struct {
-	// If the event was not created by twitch IRC connection but instead locally by message input chat load etc.
-	// This indicates that the root will not start a new wait message command.
-	// All messages requested by requestLocalMessageHandleMessage will have this flag set to true.
-	isFakeEvent             bool
-	accountID               string
-	channel                 string
-	channelID               string
-	channelGuestID          string // source-room-id by twitch
-	channelGuestDisplayName string // set later when broadcast tab reads the message
-
-	message         twitchirc.IRCer
-	displayModifier messageContentModifier // modifier for the original irc message
-
-	// if message should only be sent to a specific tab ID
-	// if empty send to all
-	tabID string
-
-	// Kitty graphics terminal command that must be written before this event
-	// is rendered (e.g. image upload/placement). Emitted as tea.Raw by Root
-	// before forwarding to tabs; not consumed by tabs themselves.
-	prepareCommand string
-
-	// imageKey is non-zero if some emote/badge images were not cached yet and are displayed as
-	// text until they are downloaded in the background, see imagesResolvedMessage.
-	imageKey uint64
-}
-
-// imagesResolvedMessage comes when the images of a chat event, displayed as text so far,
-// were downloaded. Chat windows swap the text for the images.
-type imagesResolvedMessage struct {
-	imageKey         uint64
-	prepareCommand   string          // emitted as tea.Raw by Root, like chatEventMessage.prepareCommand
-	wordReplacements wordReplacement // emote replacements, merged into the existing ones
-	badgeReplacement wordReplacement // replaces existing badges, nil if badges could not be resolved
-}
-
-type (
-	messageContentModifier struct {
-		wordReplacements wordReplacement
-		badgeReplacement wordReplacement
-		messageSuffix    string
-		strikethrough    bool
-		italic           bool
-	}
-	wordReplacement map[string]string // og:replacement
-)
-
-// requestLocalMessageHandleMessage comes when the program requests a message to be handled by the IRC message handler which
-// then converts it into a chatEventMessage
-type requestLocalMessageHandleMessage struct {
-	message   twitchirc.IRCer
-	accountID string
-	tabID     string
-}
-
-// requestLocalMessageHandleBatchMessage is the same as requestLocalMessageHandleMessage but for multiple message
-type requestLocalMessageHandleBatchMessage struct {
-	messages  []twitchirc.IRCer
-	accountID string
-	tabID     string
-}
-
-// EventSubMessage is kept for backward compatibility but no longer used.
-// Events now come through wspool.EventSubEvent.
-type EventSubMessage struct {
-	Payload eventsub.Message[eventsub.NotificationPayload]
-}
-
 // versionCheckMessage carries the result of the startup version check.
 type versionCheckMessage struct {
 	info UpdateInfo
@@ -93,7 +22,13 @@ type versionCheckMessage struct {
 
 // polledStreamInfoMessage comes when current stream info is refreshed
 type polledStreamInfoMessage struct {
-	streamInfos []setStreamInfoMessage
+	streamInfos []tab.SetStreamInfoMessage
+}
+
+// CloseTabMessage closes a tab by stable identity. Unlike close-pane, this runs
+// the tab's normal resource cleanup; unassigned-tab closure leaves panes alone.
+type CloseTabMessage struct {
+	TabID string
 }
 
 // appStateSaveMessage comes when current app state was saved
@@ -106,31 +41,3 @@ type imageCleanupTickMessage struct {
 
 // imageAnimationTickMessage advances client side animated images.
 type imageAnimationTickMessage struct{}
-
-// joinChannelMessage comes when user confirms channel which should be joined
-type joinChannelMessage struct {
-	tabKind TabKind
-	channel string
-	account save.Account
-}
-
-// setStreamInfoMessage comes when new live info about a streamer was fetched
-type setStreamInfoMessage struct {
-	target   string // the broadcasters ID
-	username string // is broadcasters display name
-	viewer   int
-	title    string
-	game     string
-	isLive   bool
-}
-
-// channelSuggestionsLoadedMessage delivers channel names for /join autocomplete
-type channelSuggestionsLoadedMessage struct {
-	targetID string
-	channels []string
-}
-
-// requestNotificationIconMessage comes when app requests an notification icon for a tab
-type requestNotificationIconMessage struct {
-	tabID string
-}

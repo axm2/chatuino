@@ -3,7 +3,6 @@ package badge
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -29,7 +28,6 @@ type BadgeCache interface {
 
 type DisplayManager interface {
 	Convert(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
-	ConvertCached(unit kittyimg.DisplayUnit) (kittyimg.KittyDisplayUnit, error)
 }
 
 type Replacer struct {
@@ -63,27 +61,12 @@ func NewReplacer(httpClient *http.Client, cache BadgeCache, enableGraphics bool,
 	}
 }
 
-// Replace replaces badges with images. Downloads missing badge images, which may block for a long time.
-func (r *Replacer) Replace(broadcasterID string, badgeList []twitchirc.Badge) (string, map[string]string, error) {
-	cmd, badges, _, err := r.replace(broadcasterID, badgeList, false)
-	return cmd, badges, err
-}
-
-// ReplaceCached is like Replace but never downloads. Badges whose images are not cached yet are
-// replaced with text and pending is true. Call Replace in the background to resolve them.
-func (r *Replacer) ReplaceCached(broadcasterID string, badgeList []twitchirc.Badge) (cmd string, badges map[string]string, pending bool, err error) {
-	return r.replace(broadcasterID, badgeList, true)
-}
-
-func (r *Replacer) textBadge(set string, b twitchapi.BadgeVersion) string {
-	if colored, ok := r.badeColorMap[set]; ok {
-		return colored
+// Replace uses ctx for badge image downloads and stops on cancellation.
+func (r *Replacer) Replace(ctx context.Context, broadcasterID string, badgeList []twitchirc.Badge) (string, map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
 	}
 
-	return b.Title
-}
-
-func (r *Replacer) replace(broadcasterID string, badgeList []twitchirc.Badge, cachedOnly bool) (string, map[string]string, bool, error) {
 	badgeMap := r.cache.MatchBadgeSet(broadcasterID, badgeList)
 	badgesSortedKeys := slices.Sorted(maps.Keys(badgeMap))
 
@@ -91,19 +74,28 @@ func (r *Replacer) replace(broadcasterID string, badgeList []twitchirc.Badge, ca
 
 	if !r.enableGraphics {
 		for _, k := range badgesSortedKeys {
-			formattedBadges[k] = r.textBadge(k, badgeMap[k])
+			b := badgeMap[k]
+
+			if colored, ok := r.badeColorMap[k]; ok {
+				formattedBadges[k] = colored
+				continue
+			}
+
+			formattedBadges[k] = b.Title
 		}
 
-		return "", formattedBadges, false, nil
+		return "", formattedBadges, nil
 	}
 
 	prepare := strings.Builder{}
-	pending := false
 
 	for _, k := range badgesSortedKeys {
+		if err := ctx.Err(); err != nil {
+			return prepare.String(), formattedBadges, err
+		}
 		b := badgeMap[k]
 
-		unit := kittyimg.DisplayUnit{
+		u, err := r.displayManager.Convert(kittyimg.DisplayUnit{
 			ID:           broadcasterID + k + b.ID,
 			Directory:    "badge",
 			RightPadding: badgePadding,
@@ -112,28 +104,14 @@ func (r *Replacer) replace(broadcasterID string, badgeList []twitchirc.Badge, ca
 
 				log.Logger.Info().Str("id", b.ID).Str("set", k).Str("url", url).Msg("fetching badge")
 
-				return r.fetch(context.Background(), b.Image_URL_1x)
+				return r.fetch(ctx, b.Image_URL_1x)
 			},
-		}
-
-		var (
-			u   kittyimg.KittyDisplayUnit
-			err error
-		)
-		if cachedOnly {
-			u, err = r.displayManager.ConvertCached(unit)
-		} else {
-			u, err = r.displayManager.Convert(unit)
-		}
-
-		if errors.Is(err, kittyimg.ErrImageNotCached) {
-			pending = true
-			formattedBadges[k] = r.textBadge(k, b)
-			continue
-		}
-
+		})
 		if err != nil {
-			return "", nil, false, fmt.Errorf("failed to convert (%s) badge: %w", broadcasterID+k+b.ID, err)
+			if ctx.Err() != nil {
+				return prepare.String(), formattedBadges, ctx.Err()
+			}
+			return "", nil, fmt.Errorf("failed to convert (%s) badge: %w", broadcasterID+k+b.ID, err)
 		}
 
 		prepare.WriteString(u.PrepareCommand)
@@ -141,7 +119,7 @@ func (r *Replacer) replace(broadcasterID string, badgeList []twitchirc.Badge, ca
 		formattedBadges[k] = u.ReplacementText
 	}
 
-	return prepare.String(), formattedBadges, pending, nil
+	return prepare.String(), formattedBadges, ctx.Err()
 }
 
 func (r *Replacer) fetch(ctx context.Context, reqURL string) (io.ReadCloser, string, error) {
@@ -156,6 +134,7 @@ func (r *Replacer) fetch(ctx context.Context, reqURL string) (io.ReadCloser, str
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
 		return nil, "", fmt.Errorf("unexpected status code, got: %d", resp.StatusCode)
 	}
 
@@ -167,7 +146,10 @@ var contributorBadgeText = lipgloss.NewStyle().Foreground(lipgloss.Color("#88c0d
 
 // InjectContributorBadge adds a Chatuino contributor badge to the badge map if the user is a contributor.
 // The badge key "!chatuino" sorts before all other badges (ASCII '!' < letters).
-func (r *Replacer) InjectContributorBadge(loginName string, badges map[string]string) (string, error) {
+func (r *Replacer) InjectContributorBadge(ctx context.Context, loginName string, badges map[string]string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if !contributor.IsContributor(loginName) {
 		return "", nil
 	}

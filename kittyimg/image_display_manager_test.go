@@ -2,12 +2,9 @@ package kittyimg
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
@@ -115,6 +112,50 @@ func TestDisplayManager_Convert_FreshDownload(t *testing.T) {
 	require.Contains(t, result.PrepareCommand, "\x1b_Gf=32,i=1,t=f,q=2")
 	require.Contains(t, result.PrepareCommand, "\x1b_Ga=p,i=1,p=1,q=2")
 	require.Contains(t, result.ReplacementText, "\x1b[38;2;0;0;1m\U0010eeee\x1b[39m")
+}
+
+// TestDisplayManager_Convert_Codecs exercises the decoder paths backed by the
+// third-party AVIF and animated-WebP modules (avif.DecodeAll, webp.DecodeAll).
+// Those dependencies sit on 0.x versions, where a minor bump may change behavior
+// without breaking the build, so a compile-only check is not enough: real image
+// data has to go through the decoders.
+func TestDisplayManager_Convert_Codecs(t *testing.T) {
+	tests := []struct {
+		name        string
+		testdata    string
+		contentType string
+	}{
+		{name: "avif", testdata: "../emote/testdata/test.avif", contentType: "image/avif"},
+		{name: "animated webp", testdata: "../emote/testdata/animated.webp", contentType: "image/webp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset global state for this test
+			globalImagePlacementIDCounter.Store(0)
+			globalPlacedImages = &syncmap.Map{}
+
+			dm := NewDisplayManager(afero.NewMemMapFs(), 400, 400, DisplayOptions{Rows: 1})
+
+			data, err := os.ReadFile(tt.testdata)
+			require.NoError(t, err)
+			require.NotEmpty(t, data)
+
+			unit := DisplayUnit{
+				ID:         tt.name,
+				Directory:  "emote",
+				IsAnimated: true,
+				Load: func() (io.ReadCloser, string, error) {
+					return io.NopCloser(bytes.NewReader(data)), tt.contentType, nil
+				},
+			}
+
+			result, err := dm.Convert(unit)
+			require.NoError(t, err)
+			require.NotEmpty(t, result.PrepareCommand)
+			require.NotEmpty(t, result.ReplacementText)
+		})
+	}
 }
 
 func TestDisplayManager_Convert_AnimatedUnsupported(t *testing.T) {
@@ -275,78 +316,4 @@ func TestIntToRGB(t *testing.T) {
 			require.Equal(t, tt.b, b)
 		})
 	}
-}
-
-func TestDisplayManager_ConvertCached_NeverLoads(t *testing.T) {
-	t.Parallel()
-
-	dm := NewDisplayManager(afero.NewMemMapFs(), 10, 10, DisplayOptions{})
-
-	unit := DisplayUnit{
-		ID:        fmt.Sprintf("convert-cached-never-loads-%d", time.Now().UnixNano()), // session cache is global
-		Directory: "emote",
-		Load: func() (io.ReadCloser, string, error) {
-			t.Fatal("ConvertCached must not load")
-			return nil, "", nil
-		},
-	}
-
-	_, err := dm.ConvertCached(unit)
-	require.ErrorIs(t, err, ErrImageNotCached)
-}
-
-func TestDisplayManager_Convert_ConcurrentSameImage(t *testing.T) {
-	t.Parallel()
-
-	dm := NewDisplayManager(afero.NewMemMapFs(), 10, 10, DisplayOptions{})
-
-	emoteData, err := os.ReadFile("../emote/testdata/pepeLaugh.webp")
-	require.NoError(t, err)
-
-	var loads atomic.Int32
-	release := make(chan struct{})
-	unit := DisplayUnit{
-		ID:        fmt.Sprintf("convert-concurrent-same-image-%d", time.Now().UnixNano()), // session cache is global
-		Directory: "emote",
-		Load: func() (io.ReadCloser, string, error) {
-			loads.Add(1)
-			<-release // keep the download in flight until all callers wait for it
-			return io.NopCloser(bytes.NewReader(emoteData)), "image/webp", nil
-		},
-	}
-
-	const callers = 8
-	results := make(chan KittyDisplayUnit, callers)
-	for range callers {
-		go func() {
-			u, err := dm.Convert(unit)
-			if err != nil {
-				t.Error(err)
-			}
-			results <- u
-		}()
-	}
-
-	// ConvertCached on the "UI loop" doesn't block while the download is in flight
-	_, err = dm.ConvertCached(unit)
-	require.ErrorIs(t, err, ErrImageNotCached)
-
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-
-	var prepared int
-	var placeholder string
-	for range callers {
-		u := <-results
-		if u.PrepareCommand != "" {
-			prepared++
-		}
-		if placeholder == "" {
-			placeholder = u.ReplacementText
-		}
-		require.Equal(t, placeholder, u.ReplacementText, "all callers share one placement")
-	}
-
-	require.LessOrEqual(t, loads.Load(), int32(2), "downloads are deduplicated") // a late caller may miss the in-flight call, but finds the placement
-	require.Equal(t, 1, prepared, "image is placed exactly once")
 }

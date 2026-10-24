@@ -1,19 +1,22 @@
 package mainui
 
 import (
-	"fmt"
-	"slices"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
+	"github.com/julez-dev/chatuino/save"
+
 	"charm.land/lipgloss/v2"
-	"github.com/google/uuid"
+	"github.com/julez-dev/chatuino/ui/nav"
 )
 
+// tabHitSpan is a clickable column range on the tab header content row.
+type tabHitSpan struct {
+	start, end int // [start, end) columns, including the leading border column
+	id         string
+}
+
 type horizontalTabHeader struct {
-	width   int
-	entries []tabHeaderEntry
-	deps    *DependencyContainer
+	width int
 
 	// pre-created styles to avoid allocations in View()/renderTabContent() (called every frame)
 	borderStyle       lipgloss.Style
@@ -23,53 +26,32 @@ type horizontalTabHeader struct {
 	notificationStyle lipgloss.Style
 }
 
-func newHorizontalTabHeader(width int, deps *DependencyContainer) *horizontalTabHeader {
+func newHorizontalTabHeader(width int, theme save.Theme) *horizontalTabHeader {
 	return &horizontalTabHeader{
 		width:             width,
-		deps:              deps,
-		borderStyle:       lipgloss.NewStyle().Foreground(lipgloss.Color(deps.UserConfig.Theme.InputPromptColor)),
-		bulletStyle:       lipgloss.NewStyle().Foreground(lipgloss.Color(deps.UserConfig.Theme.InputPromptColor)),
-		separatorStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color(deps.UserConfig.Theme.DimmedTextColor)),
-		activeStyle:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(deps.UserConfig.Theme.InputPromptColor)),
-		notificationStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(deps.UserConfig.Theme.ChatNoticeAlertColor)),
+		borderStyle:       lipgloss.NewStyle().Foreground(lipgloss.Color(theme.InputPromptColor)),
+		bulletStyle:       lipgloss.NewStyle().Foreground(lipgloss.Color(theme.InputPromptColor)),
+		separatorStyle:    lipgloss.NewStyle().Foreground(lipgloss.Color(theme.DimmedTextColor)),
+		activeStyle:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(theme.InputPromptColor)),
+		notificationStyle: lipgloss.NewStyle().Foreground(lipgloss.Color(theme.ChatNoticeAlertColor)),
 	}
 }
 
-func (h *horizontalTabHeader) Init() tea.Cmd {
-	return nil
-}
-
-func (h *horizontalTabHeader) Update(msg tea.Msg) (header, tea.Cmd) {
-	if req, ok := msg.(requestNotificationIconMessage); ok {
-		for i, e := range h.entries {
-			if e.id == req.tabID && !e.selected {
-				h.entries[i].hasNotification = true
-				break
-			}
-		}
-	}
-
-	return h, nil
-}
-
-func (h *horizontalTabHeader) View() string {
-	if len(h.entries) == 0 {
+func (h *horizontalTabHeader) View(rows []nav.Row) string {
+	if len(rows) == 0 || h.width <= 0 {
 		return ""
 	}
 
 	borderStyle := h.borderStyle
 
 	// Calculate pages with variable width
-	pages := h.calculatePages()
-	currentPage, totalPages := h.findCurrentPage(pages)
+	pages := h.calculatePages(rows)
+	currentPage, totalPages := h.findCurrentPage(rows, pages)
 
-	// Top label with page indicator
-	topLabel := "[ Tabs ]"
-	if totalPages > 1 {
-		topLabel = fmt.Sprintf("[ Tabs %d/%d ]", currentPage+1, totalPages)
-	}
+	// Top label with page and workspace context.
+	topLabel := tabHeaderLabel("Tabs", rows, currentPage+1, totalPages)
 
-	innerWidth := h.width - 2 // -2 for left/right │
+	innerWidth := max(0, h.width-2) // -2 for left/right │
 
 	// Build borders - total width should be h.width
 	// Top: ┌─ + label + fill + ─┐ = 2 + label + fill + 2 = innerWidth + 2 = h.width
@@ -83,7 +65,7 @@ func (h *horizontalTabHeader) View() string {
 	bottomBorder := "└" + strings.Repeat("─", innerWidth) + "┘"
 
 	// Build content with tabs, separators, arrows
-	content := h.renderTabContent(pages, currentPage, totalPages)
+	content := h.renderTabContent(rows, pages, currentPage, totalPages)
 
 	// Pad and wrap with │ - content row should match border width
 	padNeeded := innerWidth - lipgloss.Width(content)
@@ -98,9 +80,9 @@ func (h *horizontalTabHeader) View() string {
 		borderStyle.Render(bottomBorder)
 }
 
-// calculatePages groups entries into pages based on variable width
-func (h *horizontalTabHeader) calculatePages() [][]int {
-	if len(h.entries) == 0 {
+// calculatePages groups rows into pages based on variable width
+func (h *horizontalTabHeader) calculatePages(rows []nav.Row) [][]int {
+	if len(rows) == 0 {
 		return nil
 	}
 
@@ -114,23 +96,24 @@ func (h *horizontalTabHeader) calculatePages() [][]int {
 	var pages [][]int
 	var currentPage []int
 	currentWidth := 0
+	showBadges := showWorkspaceBadges(rows)
 
-	for i, entry := range h.entries {
-		// Width = bullet(2 "▸ ") + content + separator(3 " │ ")
+	for i, row := range rows {
+		// Width = bullet(2 "▸ ") + optional badge + content + separator(3 " │ ")
 		// For first item on page, no leading separator needed
-		entryWidth := 2 + lipgloss.Width(entry.render())
+		rowWidth := 2 + lipgloss.Width(workspaceRowLabel(row, showBadges))
 		if len(currentPage) > 0 {
-			entryWidth += 3 // add separator width
+			rowWidth += 3 // add separator width
 		}
 
-		if currentWidth+entryWidth > availableWidth && len(currentPage) > 0 {
+		if currentWidth+rowWidth > availableWidth && len(currentPage) > 0 {
 			// Start new page
 			pages = append(pages, currentPage)
 			currentPage = []int{i}
-			currentWidth = 2 + lipgloss.Width(entry.render()) // reset without separator
+			currentWidth = 2 + lipgloss.Width(workspaceRowLabel(row, showBadges)) // reset without separator
 		} else {
 			currentPage = append(currentPage, i)
-			currentWidth += entryWidth
+			currentWidth += rowWidth
 		}
 	}
 
@@ -141,30 +124,29 @@ func (h *horizontalTabHeader) calculatePages() [][]int {
 	return pages
 }
 
-// findCurrentPage returns the page index containing the selected entry
-func (h *horizontalTabHeader) findCurrentPage(pages [][]int) (pageIndex, totalPages int) {
+// findCurrentPage returns the page index containing the active row
+func (h *horizontalTabHeader) findCurrentPage(rows []nav.Row, pages [][]int) (pageIndex, totalPages int) {
 	totalPages = len(pages)
 	if totalPages == 0 {
 		return 0, 0
 	}
 
-	// Find selected entry index
-	selectedIndex := -1
-	for i, e := range h.entries {
-		if e.selected {
-			selectedIndex = i
+	activeIndex := -1
+	for i, row := range rows {
+		if row.Active {
+			activeIndex = i
 			break
 		}
 	}
 
-	if selectedIndex == -1 {
+	if activeIndex == -1 {
 		return 0, totalPages
 	}
 
-	// Find which page contains the selected entry
+	// Find which page contains the active row
 	for pi, page := range pages {
 		for _, idx := range page {
-			if idx == selectedIndex {
+			if idx == activeIndex {
 				return pi, totalPages
 			}
 		}
@@ -174,7 +156,7 @@ func (h *horizontalTabHeader) findCurrentPage(pages [][]int) (pageIndex, totalPa
 }
 
 // renderTabContent renders the tab row with bullets, separators, and arrows
-func (h *horizontalTabHeader) renderTabContent(pages [][]int, currentPage, totalPages int) string {
+func (h *horizontalTabHeader) renderTabContent(rows []nav.Row, pages [][]int, currentPage, totalPages int) string {
 	if len(pages) == 0 || currentPage >= len(pages) {
 		return ""
 	}
@@ -192,7 +174,7 @@ func (h *horizontalTabHeader) renderTabContent(pages [][]int, currentPage, total
 
 	if showPrev {
 		// Check for notifications on previous pages
-		hasNotification := h.hasNotificationInRange(0, pages[currentPage][0])
+		hasNotification := hasNotificationInRange(rows, 0, pages[currentPage][0])
 		if hasNotification {
 			b.WriteString(notificationStyle.Render("<"))
 		} else {
@@ -204,9 +186,12 @@ func (h *horizontalTabHeader) renderTabContent(pages [][]int, currentPage, total
 	}
 
 	// Render tabs on current page
-	pageEntries := pages[currentPage]
-	for i, entryIdx := range pageEntries {
-		entry := h.entries[entryIdx]
+	pageRows := pages[currentPage]
+	showBadges := showWorkspaceBadges(rows)
+
+	for i, rowIdx := range pageRows {
+		row := rows[rowIdx]
+		label := workspaceRowLabel(row, showBadges)
 
 		// Add separator before (except first)
 		if i > 0 {
@@ -214,12 +199,12 @@ func (h *horizontalTabHeader) renderTabContent(pages [][]int, currentPage, total
 		}
 
 		// Bullet for selected tab
-		if entry.selected {
+		if row.Active {
 			b.WriteString(bulletStyle.Render("▸ "))
-			b.WriteString(activeStyle.Render(entry.render()))
+			b.WriteString(activeStyle.Render(label))
 		} else {
 			b.WriteString("  ") // spacing to align with bullet
-			b.WriteString(entry.render())
+			b.WriteString(label)
 		}
 	}
 
@@ -228,7 +213,7 @@ func (h *horizontalTabHeader) renderTabContent(pages [][]int, currentPage, total
 		b.WriteString(" ")
 		// Check for notifications on next pages
 		lastOnPage := pages[currentPage][len(pages[currentPage])-1]
-		hasNotification := h.hasNotificationInRange(lastOnPage+1, len(h.entries))
+		hasNotification := hasNotificationInRange(rows, lastOnPage+1, len(rows))
 		if hasNotification {
 			b.WriteString(notificationStyle.Render(">"))
 		} else {
@@ -239,47 +224,81 @@ func (h *horizontalTabHeader) renderTabContent(pages [][]int, currentPage, total
 	return b.String()
 }
 
-// hasNotificationInRange checks if any entry in [start, end) has a notification
-func (h *horizontalTabHeader) hasNotificationInRange(start, end int) bool {
-	for i := start; i < end && i < len(h.entries); i++ {
-		if h.entries[i].hasNotification {
+// buildHitSpans mirrors renderTabContent's layout and records the column range
+// of every clickable tab, plus the previous/next page arrows.
+func (h *horizontalTabHeader) buildHitSpans(rows []nav.Row, pages [][]int, currentPage, totalPages int) []tabHitSpan {
+	if len(pages) == 0 || currentPage >= len(pages) {
+		return nil
+	}
+
+	showPrev := currentPage > 0
+	showNext := currentPage < totalPages-1
+
+	spans := make([]tabHitSpan, 0, len(pages[currentPage])+2)
+	showBadges := showWorkspaceBadges(rows)
+
+	// x = left border (1) + left arrow/padding (2)
+	x := 1 + 2
+
+	if showPrev {
+		if prevPage := pages[currentPage-1]; len(prevPage) > 0 {
+			spans = append(spans, tabHitSpan{start: x - 2, end: x, id: rows[prevPage[0]].ID})
+		}
+	}
+
+	for i, rowIdx := range pages[currentPage] {
+		if i > 0 {
+			x += 3 // separator " │ "
+		}
+
+		start := x
+		x += 2 + lipgloss.Width(workspaceRowLabel(rows[rowIdx], showBadges)) // bullet + badge + label
+		spans = append(spans, tabHitSpan{start: start, end: x, id: rows[rowIdx].ID})
+	}
+
+	if showNext {
+		if nextPage := pages[currentPage+1]; len(nextPage) > 0 {
+			spans = append(spans, tabHitSpan{start: x, end: x + 2, id: rows[nextPage[0]].ID})
+		}
+	}
+
+	return spans
+}
+
+// TabAt returns the tab at the given cell. All three header rows are clickable
+// so users do not have to hit the label row exactly.
+func (h *horizontalTabHeader) TabAt(rows []nav.Row, x, y int) (string, bool) {
+	if y < 0 || y > 2 || len(rows) == 0 {
+		return "", false
+	}
+
+	pages := h.calculatePages(rows)
+	currentPage, totalPages := h.findCurrentPage(rows, pages)
+
+	for _, span := range h.buildHitSpans(rows, pages, currentPage, totalPages) {
+		if x >= span.start && x < span.end {
+			return span.id, true
+		}
+	}
+
+	return "", false
+}
+
+// hasNotificationInRange checks if any row in [start, end) has a notification
+func hasNotificationInRange(rows []nav.Row, start, end int) bool {
+	for i := start; i < end && i < len(rows); i++ {
+		if rows[i].HasNotification {
 			return true
 		}
 	}
+
 	return false
-}
-
-func (h *horizontalTabHeader) AddTab(channel, identity string) (string, tea.Cmd) {
-	entry := tabHeaderEntry{
-		id:       uuid.New().String(),
-		name:     channel,
-		identity: identity,
-	}
-
-	h.entries = append(h.entries, entry)
-
-	return entry.id, nil
-}
-
-func (h *horizontalTabHeader) SelectTab(id string) {
-	for i := range h.entries {
-		h.entries[i].selected = h.entries[i].id == id
-		if h.entries[i].selected {
-			h.entries[i].hasNotification = false
-		}
-	}
-}
-
-func (h *horizontalTabHeader) RemoveTab(id string) {
-	h.entries = slices.DeleteFunc(h.entries, func(e tabHeaderEntry) bool {
-		return e.id == id
-	})
 }
 
 func (h *horizontalTabHeader) Resize(width, _ int) {
 	h.width = width
 }
 
-func (h *horizontalTabHeader) MinWidth() int {
+func (h *horizontalTabHeader) MinWidth([]nav.Row) int {
 	return 0
 }

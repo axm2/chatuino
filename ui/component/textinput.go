@@ -1,9 +1,12 @@
 package component
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
@@ -23,7 +26,14 @@ type emoteReplacementMessage struct {
 }
 
 type Replacer interface {
-	Replace(channelID, content string, emoteList []twitchirc.Emote) (string, map[string]string, error)
+	Replace(ctx context.Context, channelID, content string, emoteList []twitchirc.Emote) (string, map[string]string, error)
+}
+
+// UserColors is the read-only palette used for username completion and styling.
+// The palette owner can add or prune users without exposing its mutable cache.
+type UserColors interface {
+	Lookup(name string) (func(...string) string, bool)
+	Names() []string
 }
 
 // KeyMap is the key bindings for different actions within the textinput.
@@ -36,7 +46,7 @@ type KeyMap struct {
 // DefaultKeyMap is the default set of key bindings for navigating and acting
 // upon the textinput.
 var DefaultKeyMap = KeyMap{
-	AcceptSuggestion: key.NewBinding(key.WithKeys("tab")),
+	AcceptSuggestion: key.NewBinding(key.WithKeys("tab", "ctrl+space", "right")),
 	NextSuggestion:   key.NewBinding(key.WithKeys("down", "ctrl+n")),
 	PrevSuggestion:   key.NewBinding(key.WithKeys("up", "ctrl+p")),
 }
@@ -62,8 +72,8 @@ type SuggestionTextInput struct {
 	customSuggestions map[string]string
 	emoteReplacements map[string]string // emoteText:unicode
 
-	userCache    map[string]func(...string) string // [username]render func
-	channelCache map[string]struct{}               // channel logins for /join autocomplete
+	userColors   UserColors
+	channelCache map[string]struct{} // channel logins for /join autocomplete
 
 	// Cached word-at-cursor to avoid repeated []rune() conversions per cycle.
 	// Invalidated when input value or cursor position changes.
@@ -92,7 +102,7 @@ func defaultTrie() *trie.Trie {
 }
 
 // NewSuggestionTextInput creates a new model with default settings.
-func NewSuggestionTextInput(userCache map[string]func(...string) string, customSuggestions map[string]string) *SuggestionTextInput {
+func NewSuggestionTextInput(userColors UserColors, customSuggestions map[string]string) *SuggestionTextInput {
 	input := textinput.New()
 	input.SetWidth(20)
 	input.CharLimit = 500
@@ -115,7 +125,7 @@ func NewSuggestionTextInput(userCache map[string]func(...string) string, customS
 		KeyMap:                    DefaultKeyMap,
 		InputModel:                input,
 		history:                   []string{},
-		userCache:                 userCache,
+		userColors:                userColors,
 		IncludeCommandSuggestions: true,
 		IncludeModeratorCommands:  false,
 		customSuggestions:         customSuggestions,
@@ -181,8 +191,16 @@ func (s *SuggestionTextInput) Update(msg tea.Msg) (*SuggestionTextInput, tea.Cmd
 
 			return s, nil
 		case key.Matches(msg, s.KeyMap.AcceptSuggestion):
-			// If we can accept a suggestion, do it
-			if s.canAcceptSuggestion() {
+			accept := s.canAcceptSuggestion()
+
+			// Right arrow doubles as a cursor-movement key. Only let it accept
+			// when the cursor is at the end of the input; otherwise it must move
+			// the cursor as usual.
+			if accept && msg.String() == "right" && s.InputModel.Position() < utf8.RuneCountInString(s.InputModel.Value()) {
+				accept = false
+			}
+
+			if accept {
 				_, startIndex, endIndex := s.wordAtCursor()
 				before := s.InputModel.Value()[:startIndex]
 				after := s.InputModel.Value()[endIndex:]
@@ -203,9 +221,17 @@ func (s *SuggestionTextInput) Update(msg tea.Msg) (*SuggestionTextInput, tea.Cmd
 				newVal := collapseSpaces(before + suggestion + after)
 				s.InputModel.SetValue(newVal)
 				s.InputModel.SetCursor(len([]rune(collapseSpaces(before + suggestion)))) // set cursor to end of suggestion
+				return s, nil
 			}
-			// Always return when AcceptSuggestion key is pressed - don't fall through to default
-			// This prevents the key from being inserted as text when there's no suggestion
+
+			// Movement keys fall through so they still move the cursor when
+			// there is nothing to accept. Other accept keys are swallowed so
+			// they cannot be inserted as literal text.
+			if msg.String() == "right" {
+				s.InputModel, cmd = s.InputModel.Update(msg)
+				return s, cmd
+			}
+
 			return s, nil
 		case key.Matches(msg, s.KeyMap.NextSuggestion):
 			s.nextSuggestion()
@@ -254,12 +280,16 @@ func (s *SuggestionTextInput) loadEmoteImageCommand() tea.Cmd {
 		return nil
 	}
 
-	if _, ok := s.userCache[strings.TrimPrefix(suggestion, "@")]; ok {
+	if _, ok := s.userColor(strings.TrimPrefix(suggestion, "@")); ok {
 		return nil
 	}
 
+	replacer := s.EmoteReplacer
 	return func() tea.Msg {
-		prepare, replace, err := s.EmoteReplacer.Replace("", suggestion, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		prepare, replace, err := replacer.Replace(ctx, "", suggestion, nil)
 		if err != nil {
 			return nil
 		}
@@ -292,7 +322,7 @@ func (s *SuggestionTextInput) View() string {
 		suggestion := s.suggestions[s.suggestionIndex]
 
 		// If the suggestion is a username, render it with the users color function
-		if renderFunc, ok := s.userCache[strings.TrimPrefix(suggestion, "@")]; ok {
+		if renderFunc, ok := s.userColor(strings.TrimPrefix(suggestion, "@")); ok {
 			suggestion = renderFunc(suggestion)
 		}
 
@@ -305,6 +335,13 @@ func (s *SuggestionTextInput) View() string {
 	}
 
 	return "\n" + inputView
+}
+
+func (s *SuggestionTextInput) userColor(name string) (func(...string) string, bool) {
+	if s.userColors == nil {
+		return nil, false
+	}
+	return s.userColors.Lookup(name)
 }
 
 func (s *SuggestionTextInput) Blur() {
@@ -520,10 +557,10 @@ func (s *SuggestionTextInput) updateSuggestions() {
 	})
 
 	// If the current word is a user, add user suggestions to suggestions (with @ prefix)
-	if strings.HasPrefix(currWord, "@") {
+	if strings.HasPrefix(currWord, "@") && s.userColors != nil {
 		var matchedUsers []string
 
-		for user := range s.userCache {
+		for _, user := range s.userColors.Names() {
 			if strings.Contains(user, strings.ToLower(currWord[1:])) {
 				// if the current word is a command, don't add the @ prefix, since commands don't support it
 				// else add mention (@) prefix, so the target user gets a notification

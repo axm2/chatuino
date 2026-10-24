@@ -29,6 +29,7 @@ const (
 
 type Settings struct {
 	VerticalTabList bool               `yaml:"vertical_tab_list"`
+	Mouse           bool               `yaml:"mouse"` // capture mouse clicks/wheel; default: true
 	Moderation      ModerationSettings `yaml:"moderation"`
 	Chat            ChatSettings       `yaml:"chat"`
 	CustomCommands  []CustomCommand    `yaml:"custom_commands"`
@@ -50,6 +51,7 @@ type ChatSettings struct {
 	DisableBadges              bool   `yaml:"disable_badges"`
 	DisablePaddingWrappedLines bool   `yaml:"disable_padding_wrapped_lines"`
 	SmoothScroll               bool   `yaml:"smooth_scroll"`
+	DisableEmoteTooltip        bool   `yaml:"disable_emote_tooltip"`    // don't show the emote name when hovering a graphic emote with the mouse
 	TimeFormat                 string `yaml:"time_format"`              // Go time format string, default: "15:04:05"
 	UserInspectTimeFormat      string `yaml:"user_inspect_time_format"` // Go time format string, default: "2006-01-02 15:04:05"
 }
@@ -70,6 +72,7 @@ type CustomCommand struct {
 
 func BuildDefaultSettings() Settings {
 	return Settings{
+		Mouse: true,
 		Moderation: ModerationSettings{
 			StoreChatLogs: true,
 		},
