@@ -28,6 +28,7 @@ chat:
   graphic_emotes: true # Display emotes as images instead of text; Default: false
   graphic_badges: true # Display badges as images instead of text; Default: false
   graphic_scale: 2 # Height of graphic emotes/badges in terminal rows (1-4). Lines containing images take up this many rows; Default: 1
+  emote_animation: auto # How animated emotes are played: auto, native, client or off; Default: auto
   disable_badges: false # Hide badges entirely; Default: false
   smooth_scroll: true # Animate chat scrolling when new messages arrive; Default: false
   time_format: "15:04:05" # Go time format for message timestamps; Default: "15:04:05"
@@ -237,9 +238,22 @@ When `graphic_emotes` is disabled, Chatuino displays emotes as colored text. The
 
 ### Graphic Emotes
 
-Chatuino can display images and animated images as Twitch emotes using the Kitty Graphics Protocol. This protocol is implemented by Kitty and some other terminals. However, it uses the [Unicode placeholder method](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), which is currently only fully implemented by Kitty. It also works with Ghostty, but animated emotes display as static images.
+Chatuino can display images and animated images as Twitch emotes using the Kitty Graphics Protocol. This protocol is implemented by Kitty and some other terminals. However, it uses the [Unicode placeholder method](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), which is currently only fully implemented by Kitty. It also works with Ghostty, see [Animated Emotes](#animated-emotes).
 
 Currently, this feature is **only** available in Kitty and Ghostty terminals on Unix platforms. This may change in the future.
+
+#### Animated Emotes
+
+Kitty plays animated emotes itself. Ghostty accepts the animation commands but does not play them, so in Ghostty Chatuino swaps the frames itself. The `emote_animation` setting controls this:
+
+| Value | Behavior |
+| ----- | -------- |
+| `auto` | `native` in Kitty, `client` in all other terminals (default) |
+| `native` | All frames are sent to the terminal, which plays the animation |
+| `client` | Chatuino swaps frames itself. Only emotes currently on screen are animated |
+| `off` | Animated emotes show their first frame only |
+
+With `client`, each emote is updated at most 15 times per second and at most 600 frame updates are sent per second in total. With many animated emotes on screen, updates become less frequent, but playback speed stays the same. In Ghostty this costs roughly 1.5% CPU per 100 frame updates per second.
 
 #### Image Size
 

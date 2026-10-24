@@ -38,3 +38,6 @@ type appStateSaveMessage struct{}
 type imageCleanupTickMessage struct {
 	deletionCommand string
 }
+
+// imageAnimationTickMessage advances client side animated images.
+type imageAnimationTickMessage struct{}
